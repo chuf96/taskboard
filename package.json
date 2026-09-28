@@ -1,0 +1,14 @@
+{
+  "name": "taskboard",
+  "version": "1.7.3",
+  "description": "Локальная канбан-доска поверх .md-файлов",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
