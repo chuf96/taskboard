@@ -12,7 +12,7 @@ const SAMPLE = `# Ремонт
     - [ ] Съездить в салон
 
 - [ ] Заказать фасады [создана:: 2026-09-25]
-- [-] Отменённая [приоритет:: высокий]
+- [>] Перенесённая [приоритет:: высокий]
 
 Хвост файла.
 `;
@@ -148,4 +148,15 @@ test('справочник тэгов: цвет в [цвет:: …], неизв�
   const text = '# Тэги\n\n- дом [цвет:: зелёный]\n- работа\n- хобби [цвет:: неон]\n';
   assert.deepEqual(md.parseTags(text), [{ name: 'дом', color: 'зелёный' }, { name: 'работа', color: '' }, { name: 'хобби', color: '' }]);
   assert.equal(md.formatTags([{ name: 'дом', color: 'синий' }, { name: 'работа', color: '' }], text), '# Тэги\n\n- дом [цвет:: синий]\n- работа\n');
+});
+
+test('статус «Отменена»: [-], дата отмены, не входит во «всего задач»', () => {
+  const t = md.parseTaskLine('- [/] X [создана:: 2026-10-01] [взята:: 2026-10-02] ^t0001');
+  const c = md.applyPatch(t, { status: 'cancelled' }, '2026-10-03');
+  assert.equal(md.formatTaskLine(c), '- [-] X [создана:: 2026-10-01] [взята:: 2026-10-02] [отменена:: 2026-10-03] ^t0001');
+  assert.equal(md.parseTaskLine(md.formatTaskLine(c)).status, 'cancelled');
+  assert.equal(md.applyPatch(c, { status: 'progress' }).cancelled, '');
+  assert.deepEqual(md.dayCounters([c, md.parseTaskLine('- [ ] Y [создана:: 2026-10-03]')], [], '2026-10-03'), { total: 1, created: 1, closed: 0 });
+  assert.equal(md.totalAt([c], '2026-10-02'), 1);
+  assert.equal(md.totalAt([c], '2026-10-03'), 0);
 });

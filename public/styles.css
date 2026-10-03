@@ -17,6 +17,7 @@
   --s-progress-bg: #d3e5ef; --s-progress: #183347;
   --s-waiting-bg: #fdecc8;  --s-waiting: #402c1b;
   --s-closed-bg: #dbeddb;   --s-closed: #1c3829;
+  --s-cancelled-bg: #ebeae7; --s-cancelled: #787570;
   --s-error-bg: #ffe2dd;    --s-error: #5d1715;
   --error-line: #e8a39a;
 }
@@ -88,9 +89,9 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 
 .card {
   background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
-  padding: 9px 10px 8px; cursor: pointer; transition: background .1s;
-  /* Все карточки одного размера: название — две строки, ниже две строки полей на постоянных местах */
-  height: 104px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;
+  padding: 10px; cursor: pointer; transition: background .1s;
+  /* Все карточки одного размера. Ритм: 10 отступ · 40 название · 10 · 20 ряд · 8 · 20 ряд · 10 отступ = 118 */
+  height: 118px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;
 }
 .card:hover { background: #fcfcfb; }
 .card.selected { box-shadow: 0 0 0 2px var(--accent); }
@@ -106,8 +107,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
 }
 .card.closed .title { color: var(--muted); }
-.card .card-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 20px; flex: 0 0 20px; margin-top: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
-.card .card-row + .card-row { margin-top: 4px; }
+.card .card-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 20px; flex: 0 0 20px; margin-top: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
+.card .card-row + .card-row { margin-top: 8px; }
 .card .card-row > * { min-width: 0; }
 .card .slot-tag, .card .slot-person { display: flex; min-width: 0; }
 .card .when { color: var(--faint); white-space: nowrap; flex-shrink: 0; }
@@ -120,13 +121,15 @@ button.tag-dot { cursor: pointer; }
 .swatch { width: 26px; height: 26px; border-radius: 6px; font-size: 12px; font-weight: 600; display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
 .swatch:hover { transform: scale(1.08); }
 .swatch.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
-.color-row { display: grid; gap: 8px; margin-top: 12px; }
+.color-row { display: grid; gap: 8px; margin: 4px 0 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+button.tag-btn { cursor: pointer; border: 0; font: inherit; font-size: 12px; max-width: 100%; }
+button.tag-btn:hover { filter: brightness(.96); }
 .color-label { color: var(--muted); font-size: 13px; }
-.people-list li.swatch-li { padding: 6px 4px 10px 26px; }
+.people-list li.swatch-li { padding: 6px 4px 10px 4px; }
 .people-list li.swatch-li:hover { background: none; }
 .avatar {
-  width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center;
-  font-size: 10px; font-weight: 600; background: #e9e5e3; color: #64473a;
+  width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; display: inline-grid; place-items: center;
+  font-size: 9px; letter-spacing: -.2px; font-weight: 600; background: #e9e5e3; color: #64473a;
 }
 .drop-line { height: 2px; background: var(--accent); border-radius: 2px; margin: -4px 0; }
 
@@ -139,6 +142,8 @@ button.pill:hover { filter: brightness(.96); }
 .pill.progress { background: var(--s-progress-bg); color: var(--s-progress); }
 .pill.waiting { background: var(--s-waiting-bg); color: var(--s-waiting); }
 .pill.closed { background: var(--s-closed-bg); color: var(--s-closed); }
+.pill.cancelled { background: var(--s-cancelled-bg); color: var(--s-cancelled); text-decoration: line-through; text-decoration-color: rgba(120,117,112,.5); }
+.card.cancelled .title { text-decoration: line-through; text-decoration-color: rgba(120,117,112,.45); }
 .pill.error { background: var(--s-error-bg); color: var(--s-error); }
 
 .add-task { display: block; width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px; color: var(--muted); }
@@ -185,14 +190,22 @@ button.pill:hover { filter: brightness(.96); }
 .panel-body { flex: 1; overflow-y: auto; padding: 8px 32px 32px; }
 .panel .title-input {
   width: 100%; border: 0; outline: none; resize: none; overflow: hidden;
-  font-size: 24px; font-weight: 700; line-height: 1.25; padding: 0; margin: 8px 0 18px; background: none;
+  font-size: 20px; font-weight: 700; line-height: 1.3; padding: 0; margin: 8px 0 16px; background: none;
 }
 .props { display: grid; grid-template-columns: 150px 1fr; row-gap: 2px; align-items: center; margin-bottom: 18px; }
 .props .label { color: var(--muted); font-size: 13px; padding: 5px 0; display: flex; align-items: center; gap: 8px; }
-.props .val select, .props .val input {
-  border: 0; background: none; padding: 4px 6px; border-radius: 5px; outline: none; min-width: 0; max-width: 100%;
+.props .val { min-height: 32px; display: flex; align-items: center; min-width: 0; }
+/* Все значения начинаются с одного отступа 6 px: текст дат, плашка статуса, аватар, плашка тэга */
+.props .val input, .props .val .pick {
+  border: 0; background: none; padding: 0 6px; height: 28px; border-radius: 5px; outline: none; min-width: 0; max-width: 100%;
+  font: inherit; color: inherit;
 }
-.props .val select:hover, .props .val input:hover { background: var(--hover); }
+.props .val .pick { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; text-align: left; }
+.props .val input:hover, .props .val .pick:hover { background: var(--hover); }
+.props .val .person { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.props .val .person .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.faint { color: var(--faint); }
+.menu .person { display: inline-flex; align-items: center; gap: 6px; }
 .props .val input[data-k] { width: 130px; }
 .props .val input.wide { width: 100%; min-width: 0; }
 .props [hidden] { display: none !important; }
@@ -259,4 +272,3 @@ button.pill:hover { filter: brightness(.96); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #d9d8d5; border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
-.props .val.closed-only { display: flex; align-items: center; }

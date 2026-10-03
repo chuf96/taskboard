@@ -186,7 +186,7 @@ async function getBoard() {
       file, title: p.title,
       tasks: p.tasks.map((t) => ({
         line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char,
-        assignee: t.assignee, tag: t.tag, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, result: t.result,
+        assignee: t.assignee, tag: t.tag, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, cancelled: t.cancelled, result: t.result,
         description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays),
       })),
     });
@@ -279,7 +279,7 @@ const ops = {
     checkProjectFile(file);
     let text = await readRel(file);
     if (text === null) throw new HttpError(409, 'Файл проекта не найден');
-    const closed = md.parseProject(text, file).tasks.filter((t) => t.status === 'closed');
+    const closed = md.parseProject(text, file).tasks.filter((t) => md.isDone(t));
     if (!closed.length) return { files: {} };
     let { rel, text: arch } = await archiveTaskFile(file);
     const alloc = await idAllocator();

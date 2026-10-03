@@ -5,7 +5,9 @@ const STATUSES = [
   { id: 'progress', label: 'В работе' },
   { id: 'waiting', label: 'Ожидание ответа' },
   { id: 'closed', label: 'Закрыто' },
+  { id: 'cancelled', label: 'Отменена' },
 ];
+const isDone = (t) => t.status === 'closed' || t.status === 'cancelled';
 const STATUS_LABEL = Object.fromEntries(STATUSES.map((s) => [s.id, s.label]));
 STATUS_LABEL.error = 'Ошибка';
 
@@ -142,6 +144,7 @@ function swatches(selected, onPick) {
   });
   return el;
 }
+const personHtml = (name) => `<span class="person"><span class="avatar">${esc(initials(name))}</span><span class="nm">${esc(name)}</span></span>`;
 const tagChip = (name) => `<span class="tag" style="${tagStyle(name)}" title="${esc(name)}">${esc(name)}</span>`;
 
 const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
@@ -365,8 +368,8 @@ function waitFilterMenu(anchor) {
 
 function renderColumn(p) {
   const filter = state.waitFilter;
-  const open = filter ? p.tasks.filter((t) => isWaitingFor(t, filter)) : p.tasks.filter((t) => t.status !== 'closed' || t.errors.length);
-  const closed = filter ? [] : p.tasks.filter((t) => t.status === 'closed' && !t.errors.length);
+  const open = filter ? p.tasks.filter((t) => isWaitingFor(t, filter)) : p.tasks.filter((t) => !isDone(t) || t.errors.length);
+  const closed = filter ? [] : p.tasks.filter((t) => isDone(t) && !t.errors.length);
   const col = h(`<section class="column" data-file="${esc(p.file)}">
     <div class="col-head" draggable="true"><h2 title="${esc(p.title)}">${esc(p.title)}</h2><span class="count">${open.length}</span><button class="icon-btn more" title="Действия">⋯</button></div>
     <div class="col-body"><div class="cards open-cards"></div></div>
@@ -407,7 +410,7 @@ function renderColumn(p) {
 
   if (closed.length) {
     const isOpen = state.openClosed.has(p.file);
-    const tog = h(`<button class="closed-toggle${isOpen ? ' open' : ''}"><span class="chev">›</span> Закрыто (${closed.length})</button>`);
+    const tog = h(`<button class="closed-toggle${isOpen ? ' open' : ''}"><span class="chev">›</span> ${closed.some((t) => t.status === 'cancelled') ? 'Закрыто и отменено' : 'Закрыто'} (${closed.length})</button>`);
     tog.addEventListener('click', () => { isOpen ? state.openClosed.delete(p.file) : state.openClosed.add(p.file); renderBoard(); });
     body.append(tog);
     if (isOpen) {
@@ -432,7 +435,7 @@ function renderColumn(p) {
 function renderCard(p, t) {
   const st = shownStatus(t);
   const sel = state.panel && state.panel.file === p.file && state.panel.line === t.line;
-  const card = h(`<article class="card${t.status === 'closed' ? ' closed' : ''}${t.errors.length ? ' has-error' : ''}${t.overdue && !t.errors.length ? ' overdue' : ''}${sel ? ' selected' : ''}" draggable="true">
+  const card = h(`<article class="card${isDone(t) ? ' closed' : ''}${t.status === 'cancelled' ? ' cancelled' : ''}${t.errors.length ? ' has-error' : ''}${t.overdue && !t.errors.length ? ' overdue' : ''}${sel ? ' selected' : ''}" draggable="true">
     <div class="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</div>
     <div class="card-row">
       <span class="slot-person">${t.assignee ? `<span class="person" title="${esc(t.assignee)}"><span class="avatar">${esc(initials(t.assignee))}</span><span class="nm">${esc(t.assignee)}</span></span>` : ''}</span>
@@ -527,7 +530,7 @@ function setupCardDrop(col, p) {
     // Сброс в конец открытых задач: вставляем перед первой закрытой, чтобы задача не ушла в хвост
     if (!before && dropMarker._container.classList.contains('open-cards')) {
       const proj = state.board.projects.find((x) => x.file === p.file);
-      const closedT = proj.tasks.find((t) => t.status === 'closed' && !t.errors.length && t.line !== drag.ref.line);
+      const closedT = proj.tasks.find((t) => isDone(t) && !t.errors.length && t.line !== drag.ref.line);
       if (closedT) before = { line: closedT.line, lineNo: closedT.lineNo };
     }
     const ref = drag.ref;
@@ -655,7 +658,7 @@ function showDirectory(cfg) {
     const items = cfg.items();
     if (!items.length) list.append(h(`<li><span class="nm" style="color:var(--faint)">${esc(cfg.empty)}</span></li>`));
     for (const name of items) {
-      const li = h(`<li>${cfg.badge(name)}<span class="nm">${esc(name)}</span><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
+      const li = h(`<li>${cfg.badge(name)}<span class="nm">${cfg.nameHtml ? cfg.nameHtml(name) : esc(name)}</span><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
       cfg.onBadge?.(name, li, draw);
       li.querySelector('.ren').addEventListener('click', () => {
         const inp = h(`<input class="field" maxlength="${cfg.max}" value="${esc(name)}">`);
@@ -677,7 +680,7 @@ function showDirectory(cfg) {
     }
   };
   const input = wrap.querySelector('input');
-  if (cfg.extra) wrap.append(cfg.extra);
+  if (cfg.extra) wrap.querySelector('.add-row').before(cfg.extra);
   const add = async () => {
     const v = input.value.trim(); if (!v) return; input.value = '';
     await run({ type: cfg.ops.add, name: v, ...(cfg.addPayload?.() || {}) }, cfg.labels.add).catch(() => {});
@@ -705,18 +708,17 @@ function showTags() {
   // Для нового тэга предлагаем первый цвет, которого ещё нет у других тэгов
   const freeColor = () => TAG_COLOR_NAMES.find((c) => !(state.board.tags || []).some((t) => state.board.tagColors?.[t] === c)) || TAG_COLOR_NAMES[0];
   let color = freeColor();
-  const extra = h('<div class="color-row"><span class="color-label">Цвет нового тэга</span></div>');
+  const extra = h('<div class="color-row"><span class="color-label">Новый тэг: выберите цвет, введите название и нажмите Enter</span></div>');
   const drawPicker = () => { extra.querySelector('.swatches')?.remove(); extra.append(swatches(color, (c) => { color = c; })); };
   drawPicker();
   showDirectory({
     extra,
     addPayload: () => ({ color }),
     afterAdd: () => { color = freeColor(); drawPicker(); },
-    // Щелчок по цветной метке тэга открывает выбор цвета прямо в строке
+    // Тэг показан той же плашкой, что на карточке; щелчок по ней открывает выбор цвета прямо в строке
+    nameHtml: (name) => `<button class="tag tag-btn" style="${tagStyle(name)}" title="Сменить цвет">${esc(name)}</button>`,
     onBadge: (name, li, redraw) => {
-      const dot = li.querySelector('.tag-dot');
-      dot.title = 'Сменить цвет';
-      dot.addEventListener('click', () => {
+      li.querySelector('.tag-btn').addEventListener('click', () => {
         if (li.nextElementSibling?.classList.contains('swatch-li')) { li.nextElementSibling.remove(); return; }
         const row = h('<li class="swatch-li"></li>');
         row.append(swatches(tagColor(name), async (c) => { await run({ type: 'tagColor', name, color: c }, 'смена цвета тэга').catch(() => {}); redraw(); }));
@@ -726,7 +728,7 @@ function showTags() {
     title: 'Тэги', max: 40, placeholder: 'Новый тэг, например «домашние дела»',
     empty: 'Тэгов пока нет. Они хранятся в файле _тэги.md',
     items: () => state.board.tags || [],
-    badge: (name) => `<button class="tag-dot" style="${tagStyle(name)}"></button>`,
+    badge: () => '',
     ops: { add: 'tagAdd', rename: 'tagRename', del: 'tagDelete' },
     labels: { add: 'добавление тэга', rename: 'переименование тэга', del: 'удаление тэга' },
   });
@@ -767,15 +769,16 @@ function buildPanel() {
       <textarea class="title-input" rows="1" maxlength="${TITLE_MAX}" placeholder="Без названия"></textarea>
       <div class="errors" hidden></div>
       <div class="props">
-        <div class="label">Статус</div><div class="val"><button class="pill status-pill"></button></div>
-        <div class="label">Исполнитель</div><div class="val"><select class="assignee"></select></div>
-        <div class="label">Тэг</div><div class="val"><select class="tag-select"></select></div>
-        <div class="label">Создана</div><div class="val"><input data-k="created" placeholder="дд.мм.гггг"><span class="raw" data-raw="created"></span></div>
-        <div class="label">Взята в работу</div><div class="val"><input data-k="taken" placeholder="дд.мм.гггг"><span class="raw" data-raw="taken"></span></div>
-        <div class="label">Ждём ответа с</div><div class="val"><input data-k="waiting" placeholder="дд.мм.гггг"><span class="raw" data-raw="waiting"></span></div>
-        <div class="label">Вернуться до</div><div class="val"><input data-k="deadline" placeholder="дд.мм.гггг"><span class="raw" data-raw="deadline"></span></div>
-        <div class="label">Закрыта</div><div class="val"><input data-k="closed" placeholder="дд.мм.гггг"><span class="raw" data-raw="closed"></span></div>
-        <div class="label closed-only">Результат</div><div class="val closed-only"><input class="wide" data-f="result" maxlength="300" placeholder="Чем закончилось"></div>
+        <div class="label" data-row="status">Статус</div><div class="val" data-row="status"><button class="pick status-pick" title="Сменить статус"><span class="pill status-pill"></span></button></div>
+        <div class="label" data-row="assignee">Исполнитель</div><div class="val" data-row="assignee"><button class="pick assignee-pick" title="Выбрать исполнителя"></button></div>
+        <div class="label" data-row="tag">Тэг</div><div class="val" data-row="tag"><button class="pick tag-pick" title="Выбрать тэг"></button></div>
+        <div class="label" data-row="created">Создана</div><div class="val" data-row="created"><input data-k="created" placeholder="дд.мм.гггг"><span class="raw" data-raw="created"></span></div>
+        <div class="label" data-row="taken">Взята в работу</div><div class="val" data-row="taken"><input data-k="taken" placeholder="дд.мм.гггг"><span class="raw" data-raw="taken"></span></div>
+        <div class="label" data-row="waiting">Ждём ответа с</div><div class="val" data-row="waiting"><input data-k="waiting" placeholder="дд.мм.гггг"><span class="raw" data-raw="waiting"></span></div>
+        <div class="label" data-row="deadline">Вернуться до</div><div class="val" data-row="deadline"><input data-k="deadline" placeholder="дд.мм.гггг"><span class="raw" data-raw="deadline"></span></div>
+        <div class="label" data-row="closed">Закрыта</div><div class="val" data-row="closed"><input data-k="closed" placeholder="дд.мм.гггг"><span class="raw" data-raw="closed"></span></div>
+        <div class="label" data-row="cancelled">Отменена</div><div class="val" data-row="cancelled"><input data-k="cancelled" placeholder="дд.мм.гггг"><span class="raw" data-raw="cancelled"></span></div>
+        <div class="label" data-row="result">Результат</div><div class="val" data-row="result"><input class="wide" data-f="result" maxlength="300" placeholder="Чем закончилось"></div>
       </div>
       <div class="section-label">Комментарий</div>
       <textarea class="desc" placeholder="Заметки по задаче: что сделано, какие решения приняты."></textarea>
@@ -794,9 +797,24 @@ function buildPanel() {
   title.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } });
   title.addEventListener('change', () => { const f = cur(); const v = title.value.trim(); if (f?.t && v && v !== f.t.title) patch({ title: v }, 'переименование задачи'); });
 
-  $panel.querySelector('.status-pill').addEventListener('click', (e) => { const f = cur(); if (f?.t) statusMenu(e.currentTarget, state.panel.file, f.t); });
-  $panel.querySelector('.assignee').addEventListener('change', (e) => patch({ assignee: e.target.value }, 'смена исполнителя'));
-  $panel.querySelector('.tag-select').addEventListener('change', (e) => patch({ tag: e.target.value }, 'смена тэга'));
+  $panel.querySelector('.status-pick').addEventListener('click', (e) => { const f = cur(); if (f?.t) statusMenu(e.currentTarget, state.panel.file, f.t); });
+  // Исполнитель и тэг выбираются из такого же списка, как статус
+  $panel.querySelector('.assignee-pick').addEventListener('click', (e) => {
+    const f = cur(); if (!f?.t) return;
+    showMenu(e.currentTarget, [
+      { html: '<span class="faint">—  без исполнителя</span>', active: !f.t.assignee, action: () => patch({ assignee: '' }, 'смена исполнителя') },
+      ...state.board.people.map((n) => ({ html: personHtml(n), active: f.t.assignee === n, action: () => patch({ assignee: n }, 'смена исполнителя') })),
+    ]);
+  });
+  $panel.querySelector('.tag-pick').addEventListener('click', (e) => {
+    const f = cur(); if (!f?.t) return;
+    const tags = state.board.tags || [];
+    showMenu(e.currentTarget, [
+      { html: '<span class="faint">—  без тэга</span>', active: !f.t.tag, action: () => patch({ tag: '' }, 'смена тэга') },
+      ...tags.map((n) => ({ html: tagChip(n), active: f.t.tag === n, action: () => patch({ tag: n }, 'смена тэга') })),
+      ...(tags.length ? [] : [{ label: 'Тэгов нет — добавьте в меню ☰ → «Тэги»', disabled: true, action: () => {} }]),
+    ]);
+  });
   $panel.querySelectorAll('input[data-k]').forEach((inp) => {
     maskDate(inp);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
@@ -853,19 +871,20 @@ function syncPanel(force = false) {
   sp.className = `pill status-pill ${t.status === 'error' ? 'error' : t.status}`;
   sp.textContent = t.status === 'error' ? `[${t.char}] — выберите статус` : STATUS_LABEL[t.status];
 
-  const sel = $panel.querySelector('.assignee');
-  const people = [...state.board.people];
-  sel.innerHTML = '<option value="">—</option>' + people.map((n) => `<option>${esc(n)}</option>`).join('') +
-    (t.assignee && !people.includes(t.assignee) ? `<option>${esc(t.assignee)}</option>` : '');
-  sel.value = t.assignee;
+  $panel.querySelector('.assignee-pick').innerHTML = t.assignee ? personHtml(t.assignee) : '<span class="faint">—</span>';
+  $panel.querySelector('.tag-pick').innerHTML = t.tag ? tagChip(t.tag) : '<span class="faint">—</span>';
 
-  const tsel = $panel.querySelector('.tag-select');
-  const tags = [...(state.board.tags || [])];
-  tsel.innerHTML = '<option value="">—</option>' + tags.map((n) => `<option>${esc(n)}</option>`).join('') +
-    (t.tag && !tags.includes(t.tag) ? `<option>${esc(t.tag)}</option>` : '');
-  tsel.value = t.tag || '';
+  // Поля показываем только там, где они имеют смысл (или уже заполнены)
+  const show = {
+    waiting: t.status === 'waiting' || !!t.waiting || !!t.deadline,
+    deadline: t.status === 'waiting' || !!t.waiting || !!t.deadline,
+    closed: t.status === 'closed' || !!t.closed,
+    cancelled: t.status === 'cancelled' || !!t.cancelled,
+    result: t.status === 'closed',
+  };
+  $panel.querySelectorAll('.props [data-row]').forEach((el) => { if (el.dataset.row in show) el.hidden = !show[el.dataset.row]; });
 
-  for (const k of ['created', 'taken', 'waiting', 'deadline', 'closed']) {
+  for (const k of ['created', 'taken', 'waiting', 'deadline', 'closed', 'cancelled']) {
     const inp = $panel.querySelector(`input[data-k=${k}]`);
     const raw = $panel.querySelector(`[data-raw=${k}]`);
     const ok = validDate(t[k]);
@@ -873,7 +892,6 @@ function syncPanel(force = false) {
     inp.classList.toggle('empty-date', !t[k]);
     raw.textContent = t[k] && !ok ? `в файле: «${t[k]}»` : '';
   }
-  $panel.querySelectorAll('.closed-only').forEach((el) => { el.hidden = t.status !== 'closed'; });
   for (const k of ['result']) {
     const inp = $panel.querySelector(`input[data-f=${k}]`);
     if (force || active !== inp) inp.value = t[k] || '';
