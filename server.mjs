@@ -127,7 +127,8 @@ async function readSettings() {
 // Содержимое _board.json с изменёнными ключами — остальное сохраняется
 async function boardJsonWith(patch) { return JSON.stringify({ ...(await readBoardJson()), ...patch }, null, 2) + '\n'; }
 async function readPeople() { return md.parsePeople((await readRel(PEOPLE_FILE)) || ''); }
-async function readTags() { return md.parsePeople((await readRel(TAGS_FILE)) || ''); }
+async function readTagList() { return md.parseTags((await readRel(TAGS_FILE)) || ''); }
+async function readTags() { return (await readTagList()).map((t) => t.name); }
 
 // Задачи из архива (архив/задачи и архив/проекты) — для счётчиков «Создано/Закрыто»
 async function readArchivedTasks() {
@@ -172,7 +173,9 @@ async function getBoard() {
     return a.localeCompare(b, 'ru');
   });
   const people = await readPeople();
-  const tags = await readTags();
+  const tagList = await readTagList();
+  const tags = tagList.map((t) => t.name);
+  const tagColors = Object.fromEntries(tagList.filter((t) => t.color).map((t) => [t.name, t.color]));
   const settings = await readSettings();
   const now = md.today();
   const projects = [];
@@ -189,7 +192,7 @@ async function getBoard() {
     });
   }
   const counters = md.dayCounters(projects.flatMap((p) => p.tasks), await readArchivedTasks(), now);
-  return { folder, name: path.basename(folder), projects, people, tags, counters, today: now, settings, version: VERSION };
+  return { folder, name: path.basename(folder), projects, people, tags, tagColors, counters, today: now, settings, version: VERSION };
 }
 
 // ---------- операции ----------
@@ -373,21 +376,33 @@ const ops = {
     return { files: { [PEOPLE_FILE]: md.formatPeople(people.filter((p) => p !== name), text) }, log: [{ project: 'Исполнители', text: `удалён: ${name}`, kind: 'исполнители', from: name }] };
   },
 
-  async tagAdd({ name }) {
+  async tagAdd({ name, color }) {
     const n = md.fieldValue(checkName(name, 'Тэг')).slice(0, 40);
     const text = (await readRel(TAGS_FILE)) || '';
-    const tags = md.parsePeople(text);
-    if (tags.includes(n)) throw new HttpError(409, 'Такой тэг уже есть');
-    return { files: { [TAGS_FILE]: md.formatPeople([...tags, n], text, '# Тэги') }, log: [{ project: 'Тэги', text: `добавлен: ${n}`, kind: 'тэги', to: n }] };
+    const tags = md.parseTags(text);
+    if (tags.some((t) => t.name === n)) throw new HttpError(409, 'Такой тэг уже есть');
+    const c = md.TAG_COLOR_NAMES.includes(color) ? color : '';
+    return { files: { [TAGS_FILE]: md.formatTags([...tags, { name: n, color: c }], text) }, log: [{ project: 'Тэги', text: `добавлен: ${n}${c ? ` (${c})` : ''}`, kind: 'тэги', to: n }] };
+  },
+
+  async tagColor({ name, color }) {
+    if (!md.TAG_COLOR_NAMES.includes(color)) throw new HttpError(400, 'Неизвестный цвет');
+    const text = (await readRel(TAGS_FILE)) || '';
+    const tags = md.parseTags(text);
+    const t = tags.find((x) => x.name === name);
+    if (!t) throw new HttpError(409, 'Тэг не найден');
+    const from = t.color;
+    t.color = color;
+    return { files: { [TAGS_FILE]: md.formatTags(tags, text) }, log: [{ project: 'Тэги', text: `цвет «${name}»: ${from || 'авто'} → ${color}`, kind: 'тэги', from, to: color }] };
   },
 
   async tagRename({ from, to }) {
     const n = md.fieldValue(checkName(to, 'Тэг')).slice(0, 40);
     const text = (await readRel(TAGS_FILE)) || '';
-    const tags = md.parsePeople(text);
-    if (!tags.includes(from)) throw new HttpError(409, 'Тэг не найден');
-    if (n !== from && tags.includes(n)) throw new HttpError(409, 'Такой тэг уже есть');
-    const files = { [TAGS_FILE]: md.formatPeople(tags.map((x) => (x === from ? n : x)), text, '# Тэги') };
+    const tags = md.parseTags(text);
+    if (!tags.some((t) => t.name === from)) throw new HttpError(409, 'Тэг не найден');
+    if (n !== from && tags.some((t) => t.name === n)) throw new HttpError(409, 'Такой тэг уже есть');
+    const files = { [TAGS_FILE]: md.formatTags(tags.map((t) => (t.name === from ? { ...t, name: n } : t)), text) };
     for (const file of await listProjectFiles()) {
       let t = await readRel(file);
       const tasks = md.parseProject(t, file).tasks.filter((x) => x.tag === from);
@@ -400,14 +415,14 @@ const ops = {
 
   async tagDelete({ name }) {
     const text = (await readRel(TAGS_FILE)) || '';
-    const tags = md.parsePeople(text);
+    const tags = md.parseTags(text);
     const places = [];
     for (const file of await listProjectFiles()) {
       const p = md.parseProject((await readRel(file)) || '', file);
       for (const t of p.tasks) if (t.tag === name) places.push(`${p.title}: ${t.title}`);
     }
     if (places.length) throw new HttpError(409, `Нельзя удалить: тэг «${name}» стоит у задач`, { places });
-    return { files: { [TAGS_FILE]: md.formatPeople(tags.filter((x) => x !== name), text, '# Тэги') }, log: [{ project: 'Тэги', text: `удалён: ${name}`, kind: 'тэги', from: name }] };
+    return { files: { [TAGS_FILE]: md.formatTags(tags.filter((t) => t.name !== name), text) }, log: [{ project: 'Тэги', text: `удалён: ${name}`, kind: 'тэги', from: name }] };
   },
 };
 

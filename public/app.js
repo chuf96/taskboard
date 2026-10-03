@@ -111,13 +111,36 @@ function attachCounter(input, alwaysShow) {
   return el;
 }
 
-// Цвет тэга: приглушённая палитра в духе Notion, выбирается по названию — один тэг всегда одного цвета
-const TAG_COLORS = [['#f1f0ef', '#5f5e5b'], ['#f4eeee', '#7a4f45'], ['#fbecdd', '#8a5a2b'], ['#fbf3db', '#7c6420'], ['#edf3ec', '#3f6b45'], ['#e7f3f8', '#2f617a'], ['#f6f3f9', '#674d8a'], ['#faf1f5', '#874669']];
-function tagStyle(name) {
+// Цвета тэгов: фон и текст. Цвет выбирается при создании тэга и хранится в _тэги.md как [цвет:: …];
+// у тэга без цвета он подбирается по названию — один тэг всегда одного цвета
+const TAG_COLORS = {
+  'серый': ['#eceae6', '#5a5853'], 'коричневый': ['#f0e2d9', '#7a4a31'], 'оранжевый': ['#fde0c8', '#a34d0f'],
+  'жёлтый': ['#fbefc0', '#8a6500'], 'лаймовый': ['#e8f2c4', '#5b6e12'], 'зелёный': ['#d8eedb', '#2f6b3a'],
+  'мятный': ['#d3f0e8', '#1f6b58'], 'бирюзовый': ['#d0eef1', '#1c6670'], 'голубой': ['#dbeefa', '#245f8a'],
+  'синий': ['#dce3fb', '#2f4a9e'], 'фиолетовый': ['#e7defa', '#5b3a9e'], 'сиреневый': ['#f0dcf5', '#7d3a8f'],
+  'розовый': ['#fadceb', '#9c2f66'], 'красный': ['#fbdcd9', '#a3312a'],
+};
+const TAG_COLOR_NAMES = Object.keys(TAG_COLORS);
+function tagColor(name) {
+  const set = state.board?.tagColors?.[name];
+  if (TAG_COLORS[set]) return set;
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  const [bg, fg] = TAG_COLORS[h % TAG_COLORS.length];
+  return TAG_COLOR_NAMES[h % TAG_COLOR_NAMES.length];
+}
+function tagStyle(name) {
+  const [bg, fg] = TAG_COLORS[tagColor(name)];
   return `background:${bg};color:${fg}`;
+}
+// Ряд образцов цвета; onPick получает название цвета
+function swatches(selected, onPick) {
+  const el = h(`<div class="swatches">${TAG_COLOR_NAMES.map((c) => `<button class="swatch${c === selected ? ' on' : ''}" data-c="${c}" title="${c}" style="background:${TAG_COLORS[c][0]};color:${TAG_COLORS[c][1]}">А</button>`).join('')}</div>`);
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('.swatch'); if (!b) return;
+    el.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('on', x === b));
+    onPick(b.dataset.c);
+  });
+  return el;
 }
 const tagChip = (name) => `<span class="tag" style="${tagStyle(name)}" title="${esc(name)}">${esc(name)}</span>`;
 
@@ -412,11 +435,11 @@ function renderCard(p, t) {
   const card = h(`<article class="card${t.status === 'closed' ? ' closed' : ''}${t.errors.length ? ' has-error' : ''}${t.overdue && !t.errors.length ? ' overdue' : ''}${sel ? ' selected' : ''}" draggable="true">
     <div class="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</div>
     <div class="card-row">
-      <button class="pill ${st}" title="Сменить статус">${STATUS_LABEL[st]}</button>
+      <span class="slot-person">${t.assignee ? `<span class="person" title="${esc(t.assignee)}"><span class="avatar">${esc(initials(t.assignee))}</span><span class="nm">${esc(t.assignee)}</span></span>` : ''}</span>
       <span class="slot-tag">${t.tag ? tagChip(t.tag) : ''}</span>
     </div>
     <div class="card-row">
-      <span class="slot-person">${t.assignee ? `<span class="person" title="${esc(t.assignee)}"><span class="avatar">${esc(initials(t.assignee))}</span><span class="nm">${esc(t.assignee)}</span></span>` : ''}</span>
+      <button class="pill ${st}" title="Сменить статус">${STATUS_LABEL[st]}</button>
       <span class="when">${esc(whenText(t))}</span>
     </div>
   </article>`);
@@ -633,6 +656,7 @@ function showDirectory(cfg) {
     if (!items.length) list.append(h(`<li><span class="nm" style="color:var(--faint)">${esc(cfg.empty)}</span></li>`));
     for (const name of items) {
       const li = h(`<li>${cfg.badge(name)}<span class="nm">${esc(name)}</span><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
+      cfg.onBadge?.(name, li, draw);
       li.querySelector('.ren').addEventListener('click', () => {
         const inp = h(`<input class="field" maxlength="${cfg.max}" value="${esc(name)}">`);
         li.querySelector('.nm').replaceWith(inp);
@@ -653,7 +677,12 @@ function showDirectory(cfg) {
     }
   };
   const input = wrap.querySelector('input');
-  const add = async () => { const v = input.value.trim(); if (!v) return; input.value = ''; await run({ type: cfg.ops.add, name: v }, cfg.labels.add).catch(() => {}); draw(); input.focus(); };
+  if (cfg.extra) wrap.append(cfg.extra);
+  const add = async () => {
+    const v = input.value.trim(); if (!v) return; input.value = '';
+    await run({ type: cfg.ops.add, name: v, ...(cfg.addPayload?.() || {}) }, cfg.labels.add).catch(() => {});
+    cfg.afterAdd?.(); draw(); input.focus();
+  };
   wrap.querySelector('.add-row button').addEventListener('click', add);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
   draw();
@@ -673,11 +702,31 @@ function showPeople() {
 }
 
 function showTags() {
+  // Для нового тэга предлагаем первый цвет, которого ещё нет у других тэгов
+  const freeColor = () => TAG_COLOR_NAMES.find((c) => !(state.board.tags || []).some((t) => state.board.tagColors?.[t] === c)) || TAG_COLOR_NAMES[0];
+  let color = freeColor();
+  const extra = h('<div class="color-row"><span class="color-label">Цвет нового тэга</span></div>');
+  const drawPicker = () => { extra.querySelector('.swatches')?.remove(); extra.append(swatches(color, (c) => { color = c; })); };
+  drawPicker();
   showDirectory({
+    extra,
+    addPayload: () => ({ color }),
+    afterAdd: () => { color = freeColor(); drawPicker(); },
+    // Щелчок по цветной метке тэга открывает выбор цвета прямо в строке
+    onBadge: (name, li, redraw) => {
+      const dot = li.querySelector('.tag-dot');
+      dot.title = 'Сменить цвет';
+      dot.addEventListener('click', () => {
+        if (li.nextElementSibling?.classList.contains('swatch-li')) { li.nextElementSibling.remove(); return; }
+        const row = h('<li class="swatch-li"></li>');
+        row.append(swatches(tagColor(name), async (c) => { await run({ type: 'tagColor', name, color: c }, 'смена цвета тэга').catch(() => {}); redraw(); }));
+        li.after(row);
+      });
+    },
     title: 'Тэги', max: 40, placeholder: 'Новый тэг, например «домашние дела»',
     empty: 'Тэгов пока нет. Они хранятся в файле _тэги.md',
     items: () => state.board.tags || [],
-    badge: (name) => `<span class="tag-dot" style="${tagStyle(name)}"></span>`,
+    badge: (name) => `<button class="tag-dot" style="${tagStyle(name)}"></button>`,
     ops: { add: 'tagAdd', rename: 'tagRename', del: 'tagDelete' },
     labels: { add: 'добавление тэга', rename: 'переименование тэга', del: 'удаление тэга' },
   });

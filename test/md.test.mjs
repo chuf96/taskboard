@@ -143,3 +143,9 @@ test('статистика: сегодня пересчитывается, пр�
   assert.deepEqual(next.get('2026-10-03'), { total: 1, created: 0, closed: 0 });
   assert.deepEqual(next.get('2026-10-04'), { total: 1, created: 0, closed: 0 });
 });
+
+test('справочник тэгов: цвет в [цвет:: …], неизвестный цвет игнорируется', () => {
+  const text = '# Тэги\n\n- дом [цвет:: зелёный]\n- работа\n- хобби [цвет:: неон]\n';
+  assert.deepEqual(md.parseTags(text), [{ name: 'дом', color: 'зелёный' }, { name: 'работа', color: '' }, { name: 'хобби', color: '' }]);
+  assert.equal(md.formatTags([{ name: 'дом', color: 'синий' }, { name: 'работа', color: '' }], text), '# Тэги\n\n- дом [цвет:: синий]\n- работа\n');
+});
