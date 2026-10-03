@@ -56,6 +56,10 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .topbar .name:hover { background: var(--hover); }
 .topbar .name small { color: var(--faint); font-weight: 400; }
 .topbar .spacer { flex: 1; }
+/* Счётчики дня: «всего» слева, затем «создано» и «закрыто» за сегодня */
+.counters { display: flex; align-items: center; gap: 14px; margin-left: 18px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.counters b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 3px; }
+.counters .ctr-sep { width: 1px; height: 16px; background: var(--line); }
 .filter-chip { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; margin-right: 8px; border-radius: 14px; background: var(--s-waiting-bg); color: var(--s-waiting); font-size: 13px; }
 .filter-chip span { opacity: .6; font-size: 11px; }
 .filter-chip:hover span { opacity: 1; }
@@ -67,7 +71,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
   padding: 16px; overflow-x: auto; height: calc(100vh - 52px);
 }
 .column {
-  flex: 0 0 280px; max-height: 100%; display: flex; flex-direction: column;
+  /* Ширина колонок одинаковая: длинный текст не может её раздвинуть */
+  flex: 0 0 280px; width: 280px; min-width: 280px; max-width: 280px; max-height: 100%; display: flex; flex-direction: column;
   background: var(--column); border-radius: 10px; padding: 6px;
 }
 .column.drag-over-col { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -84,6 +89,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .card {
   background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 9px 10px 8px; cursor: pointer; transition: background .1s;
+  /* Все карточки одного размера: название — две строки, ниже две строки полей на постоянных местах */
+  height: 104px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden;
 }
 .card:hover { background: #fcfcfb; }
 .card.selected { box-shadow: 0 0 0 2px var(--accent); }
@@ -91,14 +98,23 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 /* «Пора напомнить»: пастельный персиковый, не красный — красный занят «Ошибкой» */
 .card.overdue { background: #fbf1e8; box-shadow: 0 0 0 1px #f0dcc8; }
 .card.overdue:hover { background: #f8ebdf; }
-.card.overdue .meta .when { color: #9a6b45; }
+.card.overdue .when { color: #9a6b45; }
 .card.overdue.selected { box-shadow: 0 0 0 2px var(--accent); }
 .card.dragging { opacity: .35; }
-.card .title { word-wrap: break-word; margin-bottom: 7px; }
+.card .title {
+  height: 40px; line-height: 20px; flex: 0 0 40px; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
 .card.closed .title { color: var(--muted); }
-.card .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
-.card .meta .when { margin-left: auto; color: var(--faint); }
-.card .person { display: inline-flex; align-items: center; gap: 5px; }
+.card .card-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 20px; flex: 0 0 20px; margin-top: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
+.card .card-row + .card-row { margin-top: 4px; }
+.card .card-row > * { min-width: 0; }
+.card .slot-tag, .card .slot-person { display: flex; min-width: 0; }
+.card .when { color: var(--faint); white-space: nowrap; flex-shrink: 0; }
+.card .person { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.card .person .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag { display: inline-block; height: 20px; line-height: 20px; padding: 0 7px; border-radius: 4px; font-size: 12px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
 .avatar {
   width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center;
   font-size: 10px; font-weight: 600; background: #e9e5e3; color: #64473a;

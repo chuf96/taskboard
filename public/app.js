@@ -111,6 +111,16 @@ function attachCounter(input, alwaysShow) {
   return el;
 }
 
+// Цвет тэга: приглушённая палитра в духе Notion, выбирается по названию — один тэг всегда одного цвета
+const TAG_COLORS = [['#f1f0ef', '#5f5e5b'], ['#f4eeee', '#7a4f45'], ['#fbecdd', '#8a5a2b'], ['#fbf3db', '#7c6420'], ['#edf3ec', '#3f6b45'], ['#e7f3f8', '#2f617a'], ['#f6f3f9', '#674d8a'], ['#faf1f5', '#874669']];
+function tagStyle(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const [bg, fg] = TAG_COLORS[h % TAG_COLORS.length];
+  return `background:${bg};color:${fg}`;
+}
+const tagChip = (name) => `<span class="tag" style="${tagStyle(name)}" title="${esc(name)}">${esc(name)}</span>`;
+
 const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
 const shownStatus = (t) => (t.errors.length ? 'error' : t.status);
 
@@ -258,6 +268,12 @@ function renderBoard() {
   $app.innerHTML = '';
   const top = h(`<header class="topbar">
     <button class="name" title="${esc(b.folder)}">${esc(b.name)} <small>▾</small></button>
+    <div class="counters">
+      <span class="ctr" title="Все незакрытые задачи на доске"><b>${b.counters?.total ?? 0}</b> всего задач</span>
+      <span class="ctr-sep"></span>
+      <span class="ctr" title="Задачи, созданные сегодня"><b>${b.counters?.created ?? 0}</b> создано сегодня</span>
+      <span class="ctr" title="Задачи, закрытые сегодня"><b>${b.counters?.closed ?? 0}</b> закрыто сегодня</span>
+    </div>
     <span class="spacer"></span>
     ${state.waitFilter ? `<button class="filter-chip" title="Сбросить фильтр (Esc)">Ожидания: ${esc(state.waitFilter)} <span>✕</span></button>` : ''}
     <button class="icon-btn burger" title="Меню" aria-label="Меню"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5h12M3 9h12M3 13h12"/></svg></button>
@@ -270,6 +286,7 @@ function renderBoard() {
     { label: 'Фильтр ожиданий ›', action: (anchor) => waitFilterMenu(anchor) },
     { label: 'Новый проект', action: addProject },
     { label: 'Исполнители', action: showPeople },
+    { label: 'Тэги', action: showTags },
     { label: 'Настройки', action: showSettings },
     '-',
     { html: `<span class="menu-version">Версия ${esc((b.version || '').replace(/\.0$/, ''))}</span>`, disabled: true, action: () => {} },
@@ -393,10 +410,13 @@ function renderCard(p, t) {
   const st = shownStatus(t);
   const sel = state.panel && state.panel.file === p.file && state.panel.line === t.line;
   const card = h(`<article class="card${t.status === 'closed' ? ' closed' : ''}${t.errors.length ? ' has-error' : ''}${t.overdue && !t.errors.length ? ' overdue' : ''}${sel ? ' selected' : ''}" draggable="true">
-    <div class="title">${esc(t.title || 'Без названия')}</div>
-    <div class="meta">
+    <div class="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</div>
+    <div class="card-row">
       <button class="pill ${st}" title="Сменить статус">${STATUS_LABEL[st]}</button>
-      ${t.assignee ? `<span class="person"><span class="avatar">${esc(initials(t.assignee))}</span>${esc(t.assignee)}</span>` : ''}
+      <span class="slot-tag">${t.tag ? tagChip(t.tag) : ''}</span>
+    </div>
+    <div class="card-row">
+      <span class="slot-person">${t.assignee ? `<span class="person" title="${esc(t.assignee)}"><span class="avatar">${esc(initials(t.assignee))}</span><span class="nm">${esc(t.assignee)}</span></span>` : ''}</span>
       <span class="when">${esc(whenText(t))}</span>
     </div>
   </article>`);
@@ -603,16 +623,18 @@ function showSettings() {
   input.focus(); input.select();
 }
 
-function showPeople() {
-  const wrap = h('<div><ul class="people-list"></ul><div class="add-row"><input class="field" placeholder="Имя нового исполнителя"><button class="btn primary">Добавить</button></div></div>');
+// Справочник (исполнители, тэги): добавить, переименовать, удалить
+function showDirectory(cfg) {
+  const wrap = h(`<div><ul class="people-list"></ul><div class="add-row"><input class="field" maxlength="${cfg.max}" placeholder="${esc(cfg.placeholder)}"><button class="btn primary">Добавить</button></div></div>`);
   const list = wrap.querySelector('ul');
   const draw = () => {
     list.innerHTML = '';
-    if (!state.board.people.length) list.append(h('<li><span class="nm" style="color:var(--faint)">Справочник пуст. Имена хранятся в файле _исполнители.md</span></li>'));
-    for (const name of state.board.people) {
-      const li = h(`<li><span class="avatar">${esc(initials(name))}</span><span class="nm">${esc(name)}</span><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
+    const items = cfg.items();
+    if (!items.length) list.append(h(`<li><span class="nm" style="color:var(--faint)">${esc(cfg.empty)}</span></li>`));
+    for (const name of items) {
+      const li = h(`<li>${cfg.badge(name)}<span class="nm">${esc(name)}</span><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
       li.querySelector('.ren').addEventListener('click', () => {
-        const inp = h(`<input class="field" value="${esc(name)}">`);
+        const inp = h(`<input class="field" maxlength="${cfg.max}" value="${esc(name)}">`);
         li.querySelector('.nm').replaceWith(inp);
         inp.focus(); inp.select();
         let done = false;
@@ -620,23 +642,45 @@ function showPeople() {
           if (done) return;
           done = true;
           const v = inp.value.trim();
-          if (v && v !== name) await run({ type: 'personRename', from: name, to: v }, 'переименование исполнителя').catch(() => {});
+          if (v && v !== name) await run({ type: cfg.ops.rename, from: name, to: v }, cfg.labels.rename).catch(() => {});
           draw();
         };
         inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') draw(); });
         inp.addEventListener('blur', save);
       });
-      li.querySelector('.del').addEventListener('click', async () => { await run({ type: 'personDelete', name }, 'удаление исполнителя').catch(() => {}); draw(); });
+      li.querySelector('.del').addEventListener('click', async () => { await run({ type: cfg.ops.del, name }, cfg.labels.del).catch(() => {}); draw(); });
       list.append(li);
     }
   };
   const input = wrap.querySelector('input');
-  const add = async () => { const v = input.value.trim(); if (!v) return; input.value = ''; await run({ type: 'personAdd', name: v }, 'добавление исполнителя').catch(() => {}); draw(); input.focus(); };
+  const add = async () => { const v = input.value.trim(); if (!v) return; input.value = ''; await run({ type: cfg.ops.add, name: v }, cfg.labels.add).catch(() => {}); draw(); input.focus(); };
   wrap.querySelector('.add-row button').addEventListener('click', add);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
   draw();
-  modal('Исполнители', wrap, [{ label: 'Готово', action: closeModal }]);
+  modal(cfg.title, wrap, [{ label: 'Готово', action: closeModal }]);
   input.focus();
+}
+
+function showPeople() {
+  showDirectory({
+    title: 'Исполнители', max: 100, placeholder: 'Имя нового исполнителя',
+    empty: 'Справочник пуст. Имена хранятся в файле _исполнители.md',
+    items: () => state.board.people,
+    badge: (name) => `<span class="avatar">${esc(initials(name))}</span>`,
+    ops: { add: 'personAdd', rename: 'personRename', del: 'personDelete' },
+    labels: { add: 'добавление исполнителя', rename: 'переименование исполнителя', del: 'удаление исполнителя' },
+  });
+}
+
+function showTags() {
+  showDirectory({
+    title: 'Тэги', max: 40, placeholder: 'Новый тэг, например «домашние дела»',
+    empty: 'Тэгов пока нет. Они хранятся в файле _тэги.md',
+    items: () => state.board.tags || [],
+    badge: (name) => `<span class="tag-dot" style="${tagStyle(name)}"></span>`,
+    ops: { add: 'tagAdd', rename: 'tagRename', del: 'tagDelete' },
+    labels: { add: 'добавление тэга', rename: 'переименование тэга', del: 'удаление тэга' },
+  });
 }
 
 // ---------- панель задачи ----------
@@ -676,6 +720,7 @@ function buildPanel() {
       <div class="props">
         <div class="label">Статус</div><div class="val"><button class="pill status-pill"></button></div>
         <div class="label">Исполнитель</div><div class="val"><select class="assignee"></select></div>
+        <div class="label">Тэг</div><div class="val"><select class="tag-select"></select></div>
         <div class="label">Создана</div><div class="val"><input data-k="created" placeholder="дд.мм.гггг"><span class="raw" data-raw="created"></span></div>
         <div class="label">Взята в работу</div><div class="val"><input data-k="taken" placeholder="дд.мм.гггг"><span class="raw" data-raw="taken"></span></div>
         <div class="label">Ждём ответа с</div><div class="val"><input data-k="waiting" placeholder="дд.мм.гггг"><span class="raw" data-raw="waiting"></span></div>
@@ -702,6 +747,7 @@ function buildPanel() {
 
   $panel.querySelector('.status-pill').addEventListener('click', (e) => { const f = cur(); if (f?.t) statusMenu(e.currentTarget, state.panel.file, f.t); });
   $panel.querySelector('.assignee').addEventListener('change', (e) => patch({ assignee: e.target.value }, 'смена исполнителя'));
+  $panel.querySelector('.tag-select').addEventListener('change', (e) => patch({ tag: e.target.value }, 'смена тэга'));
   $panel.querySelectorAll('input[data-k]').forEach((inp) => {
     maskDate(inp);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
@@ -764,6 +810,12 @@ function syncPanel(force = false) {
     (t.assignee && !people.includes(t.assignee) ? `<option>${esc(t.assignee)}</option>` : '');
   sel.value = t.assignee;
 
+  const tsel = $panel.querySelector('.tag-select');
+  const tags = [...(state.board.tags || [])];
+  tsel.innerHTML = '<option value="">—</option>' + tags.map((n) => `<option>${esc(n)}</option>`).join('') +
+    (t.tag && !tags.includes(t.tag) ? `<option>${esc(t.tag)}</option>` : '');
+  tsel.value = t.tag || '';
+
   for (const k of ['created', 'taken', 'waiting', 'deadline', 'closed']) {
     const inp = $panel.querySelector(`input[data-k=${k}]`);
     const raw = $panel.querySelector(`[data-raw=${k}]`);
@@ -816,5 +868,12 @@ document.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('beforeunload', flushPanel);
+
+// В полночь счётчики «создано/закрыто сегодня» обнуляются: перечитываем доску, когда сменился день
+setInterval(() => {
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (state.mode === 'board' && state.board && state.board.today !== today && !state.pending) loadBoard();
+}, 60000);
 
 start().catch((e) => { $app.innerHTML = `<div class="empty"><h2>Не удалось запустить</h2><p>${esc(e.message)}</p></div>`; });

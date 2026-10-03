@@ -115,3 +115,31 @@ test('результат: только у закрытой задачи, сти�
   const r = md.applyPatch(c, { status: 'progress' });
   assert.equal(r.result, '');
 });
+
+test('тэг: разбор, запись после исполнителя, проверка по справочнику', () => {
+  const t = md.parseTaskLine('- [ ] Помыть посуду [исполнитель:: Ника] [тэг:: домашние дела] [создана:: 2026-10-03] ^t0001');
+  assert.equal(t.tag, 'домашние дела');
+  assert.equal(md.formatTaskLine(md.applyPatch(t, { tag: '' })), '- [ ] Помыть посуду [исполнитель:: Ника] [создана:: 2026-10-03] ^t0001');
+  assert.equal(md.formatTaskLine(t), '- [ ] Помыть посуду [исполнитель:: Ника] [тэг:: домашние дела] [создана:: 2026-10-03] ^t0001');
+  assert.deepEqual(md.validateTask(t, ['Ника'], ['домашние дела']), []);
+  assert.deepEqual(md.validateTask(t, ['Ника'], ['работа']), ['Тэга «домашние дела» нет в справочнике']);
+});
+
+test('счётчики дня: всего незакрытых, создано и закрыто сегодня с учётом архива, без удалённых', () => {
+  const p = (l) => md.parseTaskLine(l);
+  const board = [p('- [ ] a [создана:: 2026-10-03]'), p('- [?] b [создана:: 2026-10-01]'), p('- [x] c [создана:: 2026-10-03] [закрыта:: 2026-10-03]'), p('- [x] d [создана:: 2026-09-01] [закрыта:: 2026-09-02]')];
+  const archived = [p('- [x] e [создана:: 2026-10-02] [закрыта:: 2026-10-03]'), p('- [ ] f [создана:: 2026-10-03] [удалена:: 2026-10-03]')];
+  assert.deepEqual(md.dayCounters(board, archived, '2026-10-03'), { total: 2, created: 2, closed: 2 });
+});
+
+test('статистика: сегодня пересчитывается, прошлые строки не меняются, пропуски восстанавливаются по датам', () => {
+  const p = (l) => md.parseTaskLine(l);
+  const board = [p('- [ ] a [создана:: 2026-10-01]'), p('- [x] b [создана:: 2026-09-30] [закрыта:: 2026-10-02]')];
+  const first = md.updateStats('', board, [], '2026-10-02');
+  assert.deepEqual([...md.parseStats(first)], [['2026-09-30', { total: 1, created: 1, closed: 0 }], ['2026-10-01', { total: 2, created: 1, closed: 0 }], ['2026-10-02', { total: 1, created: 0, closed: 1 }]]);
+  const edited = first.replace('| 2026-10-01 | 2 | 1 | 0 |', '| 2026-10-01 | 7 | 7 | 7 |');
+  const next = md.parseStats(md.updateStats(edited, board, [], '2026-10-04'));
+  assert.deepEqual(next.get('2026-10-01'), { total: 7, created: 7, closed: 7 });
+  assert.deepEqual(next.get('2026-10-03'), { total: 1, created: 0, closed: 0 });
+  assert.deepEqual(next.get('2026-10-04'), { total: 1, created: 0, closed: 0 });
+});

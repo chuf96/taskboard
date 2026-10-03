@@ -19,6 +19,8 @@ const NO_OPEN = process.argv.includes('--no-open');
 const VERSION = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8')).version;
 
 const PEOPLE_FILE = '_исполнители.md';
+const TAGS_FILE = '_тэги.md';
+const STATS_FILE = '_статистика.md';
 const ORDER_FILE = '_board.json';
 const ARCHIVE_TASKS = path.join('архив', 'задачи');
 const ARCHIVE_PROJECTS = path.join('архив', 'проекты');
@@ -53,6 +55,7 @@ async function openFolder(p) {
   await saveConfig();
   snap = await takeSnapshot();
   startWatcher();
+  statsSoon();
 }
 
 // ---------- слежение за папкой ----------
@@ -124,6 +127,32 @@ async function readSettings() {
 // Содержимое _board.json с изменёнными ключами — остальное сохраняется
 async function boardJsonWith(patch) { return JSON.stringify({ ...(await readBoardJson()), ...patch }, null, 2) + '\n'; }
 async function readPeople() { return md.parsePeople((await readRel(PEOPLE_FILE)) || ''); }
+async function readTags() { return md.parsePeople((await readRel(TAGS_FILE)) || ''); }
+
+// Задачи из архива (архив/задачи и архив/проекты) — для счётчиков «Создано/Закрыто»
+async function readArchivedTasks() {
+  const out = [];
+  for (const dir of [ARCHIVE_TASKS, ARCHIVE_PROJECTS]) {
+    const ents = await fsp.readdir(path.join(folder, dir), { withFileTypes: true }).catch(() => []);
+    for (const e of ents) if (e.isFile() && /\.md$/i.test(e.name)) out.push(...md.parseProject((await readRel(path.join(dir, e.name))) ?? '', e.name).tasks);
+  }
+  return out;
+}
+async function readBoardTasks() {
+  const out = [];
+  for (const f of await listProjectFiles()) out.push(...md.parseProject((await readRel(f)) ?? '', f).tasks);
+  return out;
+}
+
+// _статистика.md: строка за сегодня обновляется после каждого изменения и раз в несколько минут
+async function updateStatsFile() {
+  if (!folder) return;
+  const before = await readRel(STATS_FILE);
+  const after = md.updateStats(before, await readBoardTasks(), await readArchivedTasks(), md.today());
+  if (after !== before) await writeRel(STATS_FILE, after);
+}
+const statsSoon = () => serial(updateStatsFile).catch((e) => console.error(e));
+setInterval(statsSoon, 5 * 60 * 1000).unref();
 
 async function uniqueRel(dir, file) {
   const ext = path.extname(file); const base = file.slice(0, -ext.length);
@@ -143,6 +172,7 @@ async function getBoard() {
     return a.localeCompare(b, 'ru');
   });
   const people = await readPeople();
+  const tags = await readTags();
   const settings = await readSettings();
   const now = md.today();
   const projects = [];
@@ -153,12 +183,13 @@ async function getBoard() {
       file, title: p.title,
       tasks: p.tasks.map((t) => ({
         line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char,
-        assignee: t.assignee, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, result: t.result,
-        description: t.description, errors: md.validateTask(t, people), overdue: md.isOverdue(t, now, settings.overdueDays),
+        assignee: t.assignee, tag: t.tag, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, result: t.result,
+        description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays),
       })),
     });
   }
-  return { folder, name: path.basename(folder), projects, people, today: now, settings, version: VERSION };
+  const counters = md.dayCounters(projects.flatMap((p) => p.tasks), await readArchivedTasks(), now);
+  return { folder, name: path.basename(folder), projects, people, tags, counters, today: now, settings, version: VERSION };
 }
 
 // ---------- операции ----------
@@ -341,6 +372,43 @@ const ops = {
     if (places.length) throw new HttpError(409, `Нельзя удалить: ${name} назначен(а) на задачи`, { places });
     return { files: { [PEOPLE_FILE]: md.formatPeople(people.filter((p) => p !== name), text) }, log: [{ project: 'Исполнители', text: `удалён: ${name}`, kind: 'исполнители', from: name }] };
   },
+
+  async tagAdd({ name }) {
+    const n = md.fieldValue(checkName(name, 'Тэг')).slice(0, 40);
+    const text = (await readRel(TAGS_FILE)) || '';
+    const tags = md.parsePeople(text);
+    if (tags.includes(n)) throw new HttpError(409, 'Такой тэг уже есть');
+    return { files: { [TAGS_FILE]: md.formatPeople([...tags, n], text, '# Тэги') }, log: [{ project: 'Тэги', text: `добавлен: ${n}`, kind: 'тэги', to: n }] };
+  },
+
+  async tagRename({ from, to }) {
+    const n = md.fieldValue(checkName(to, 'Тэг')).slice(0, 40);
+    const text = (await readRel(TAGS_FILE)) || '';
+    const tags = md.parsePeople(text);
+    if (!tags.includes(from)) throw new HttpError(409, 'Тэг не найден');
+    if (n !== from && tags.includes(n)) throw new HttpError(409, 'Такой тэг уже есть');
+    const files = { [TAGS_FILE]: md.formatPeople(tags.map((x) => (x === from ? n : x)), text, '# Тэги') };
+    for (const file of await listProjectFiles()) {
+      let t = await readRel(file);
+      const tasks = md.parseProject(t, file).tasks.filter((x) => x.tag === from);
+      if (!tasks.length) continue;
+      for (const x of tasks.reverse()) t = md.replaceBlock(t, { ...x, endNo: x.lineNo + 1 }, [md.formatTaskLine({ ...x, tag: n })]);
+      files[file] = t;
+    }
+    return { files, log: [{ project: 'Тэги', text: `переименован: ${from} → ${n} (во всех задачах)`, kind: 'тэги', from, to: n }] };
+  },
+
+  async tagDelete({ name }) {
+    const text = (await readRel(TAGS_FILE)) || '';
+    const tags = md.parsePeople(text);
+    const places = [];
+    for (const file of await listProjectFiles()) {
+      const p = md.parseProject((await readRel(file)) || '', file);
+      for (const t of p.tasks) if (t.tag === name) places.push(`${p.title}: ${t.title}`);
+    }
+    if (places.length) throw new HttpError(409, `Нельзя удалить: тэг «${name}» стоит у задач`, { places });
+    return { files: { [TAGS_FILE]: md.formatPeople(tags.filter((x) => x !== name), text, '# Тэги') }, log: [{ project: 'Тэги', text: `удалён: ${name}`, kind: 'тэги', from: name }] };
+  },
 };
 
 const projTitle = (file, text) => md.parseProject(text || '', file).title;
@@ -351,21 +419,22 @@ async function takeSnapshot() {
     const p = md.parseProject((await readRel(f)) ?? '', f);
     files[f] = { title: p.title, tasks: p.tasks };
   }
-  return { files, people: await readPeople() };
+  return { files, people: await readPeople(), tags: await readTags() };
 }
 
 // Правки, сделанные вне борда (Obsidian и т.п.): сравниваем с последним снимком и пишем в журнал.
 async function syncExternal() {
   if (!folder) return;
   const cur = await takeSnapshot();
-  const events = [...log.diffSnapshots(snap.files, cur.files, ' (вне борда)', true), ...log.diffPeople(snap.people, cur.people, ' (вне борда)', true)];
+  const events = [...log.diffSnapshots(snap.files, cur.files, ' (вне борда)', true), ...log.diffPeople(snap.people, cur.people, ' (вне борда)', true), ...log.diffPeople(snap.tags || [], cur.tags, ' (вне борда)', true, 'Тэги')];
   snap = cur;
   await log.appendLog(folder, events);
+  if (events.length) await updateStatsFile();
 }
 
 async function logAfterWrite(explicit) {
   const cur = await takeSnapshot();
-  const events = explicit ?? [...log.diffSnapshots(snap.files, cur.files), ...log.diffPeople(snap.people, cur.people)];
+  const events = explicit ?? [...log.diffSnapshots(snap.files, cur.files), ...log.diffPeople(snap.people, cur.people), ...log.diffPeople(snap.tags || [], cur.tags, '', false, 'Тэги')];
   snap = cur;
   await log.appendLog(folder, events);
   return events;
@@ -401,6 +470,7 @@ async function restoreAndLog(changes, dir, events, label) {
   const list = Array.isArray(events) && events.length ? events : [{ text: String(label || 'действие') }];
   const kind = dir === 'undo' ? 'отмена' : 'возврат';
   await logAfterWrite(list.slice(0, 200).map((e) => ({ project: String(e.project || ''), task: String(e.task || ''), id: String(e.id || ''), text: `${word}: ${String(e.text || '')}`, kind, what: String(e.kind || '') })));
+  await updateStatsFile();
 }
 
 let queue = Promise.resolve();
@@ -456,6 +526,7 @@ async function handleApi(req, res, url) {
         const r = await op(b);
         const changes = await commit(r.files);
         const events = changes.length ? await logAfterWrite(r.log) : [];
+        if (changes.length) await updateStatsFile();
         return { ...r, changes, events };
       });
       return send(res, 200, { changes: result.changes, task: result.task || null, events: result.events, rejected: result.rejected || null });
@@ -568,5 +639,5 @@ server.once('listening', () => {
 await loadConfig();
 const argFolder = process.argv.slice(2).find((a) => !a.startsWith('--'));
 if (argFolder) await openFolder(argFolder).catch(() => console.error('Папка не найдена:', argFolder));
-else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); }
+else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); statsSoon(); }
 listen();
