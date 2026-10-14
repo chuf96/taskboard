@@ -3,8 +3,8 @@
 const STATUSES = [
   { id: 'new', label: 'Новая' },
   { id: 'progress', label: 'В работе' },
-  { id: 'waiting', label: 'Ожидание ответа' },
-  { id: 'closed', label: 'Закрыто' },
+  { id: 'waiting', label: 'Ожидание' },
+  { id: 'closed', label: 'Закрыта' },
   { id: 'cancelled', label: 'Отменена' },
 ];
 const isDone = (t) => t.status === 'closed' || t.status === 'cancelled';
@@ -130,9 +130,9 @@ function tagColor(name) {
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
   return TAG_COLOR_NAMES[h % TAG_COLOR_NAMES.length];
 }
+// Тэг рисуется цветной обводкой: цвет текста и рамки берётся из выбранного цвета тэга
 function tagStyle(name) {
-  const [bg, fg] = TAG_COLORS[tagColor(name)];
-  return `background:${bg};color:${fg}`;
+  return `color:${TAG_COLORS[tagColor(name)][1]}`;
 }
 // Ряд образцов цвета; onPick получает название цвета
 function swatches(selected, onPick) {
@@ -144,10 +144,9 @@ function swatches(selected, onPick) {
   });
   return el;
 }
-const personHtml = (name) => `<span class="person"><span class="avatar">${esc(initials(name))}</span><span class="nm">${esc(name)}</span></span>`;
+const personHtml = (name) => `<span class="person"><span class="nm">${esc(name)}</span></span>`;
 const tagChip = (name) => `<span class="tag" style="${tagStyle(name)}" title="${esc(name)}">${esc(name)}</span>`;
 
-const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
 const shownStatus = (t) => (t.errors.length ? 'error' : t.status);
 
 // Очередь операций: всё по порядку, чтобы правки не перегоняли друг друга.
@@ -266,7 +265,7 @@ async function showPicker(recent, startPath) {
       row.addEventListener('click', () => go(cur.path.replace(/[\\/]$/, '') + (cur.path.includes('\\') ? '\\' : '/') + d));
       list.append(row);
     }
-    root.querySelector('.picker-foot .grow').textContent = cur.mdCount ? `В папке ${cur.mdCount} .md-файл(ов) — это будут колонки` : 'В папке нет .md-файлов — можно создать проекты позже';
+    root.querySelector('.picker-foot .grow').textContent = cur.mdCount ? `В папке ${cur.mdCount} .md-файл(ов) — это будут проекты` : 'В папке нет .md-файлов — можно создать проекты позже';
   }
   root.querySelector('.up').addEventListener('click', () => cur?.parent && go(cur.parent));
   root.querySelector('.home').addEventListener('click', () => go(cur?.home));
@@ -285,24 +284,52 @@ async function openFolder(p) {
 }
 
 // ---------- доска ----------
+// Доска v2: проекты — строки-группы, задача — одна строка. Все поля строки кликабельные.
+const ICON = {
+  star: (on) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/></svg>`,
+  chev: '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3 3 3-3"/></svg>',
+  chevR: '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3l3 3-3 3"/></svg>',
+  plus: '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 2.5v7M2.5 6h7"/></svg>',
+  open: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M9.5 2.5v11"/></svg>',
+  more: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>',
+  burger: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5h12M3 9h12M3 13h12"/></svg>',
+};
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+function dueText(iso) {
+  const [y, m, d] = iso.split('-');
+  return `до ${+d} ${MONTHS[+m - 1]}${y !== state.board.today.slice(0, 4) ? ' ' + y : ''}`;
+}
+
+// Свёрнутые группы запоминаются для каждой папки в браузере
+const collapseKey = () => 'taskboard.collapsed:' + (state.board?.folder || '');
+function loadCollapsed() {
+  try { state.collapsed = new Set(JSON.parse(localStorage.getItem(collapseKey()) || '[]')); } catch { state.collapsed = new Set(); }
+}
+function toggleCollapsed(key) {
+  state.collapsed.has(key) ? state.collapsed.delete(key) : state.collapsed.add(key);
+  try { localStorage.setItem(collapseKey(), JSON.stringify([...state.collapsed])); } catch {}
+  renderBoard();
+}
+
 function renderBoard() {
   const b = state.board;
-  const scroll = $app.querySelector('.board')?.scrollLeft || 0;
-  const colScroll = {};
-  $app.querySelectorAll('.column').forEach((c) => (colScroll[c.dataset.file] = c.querySelector('.col-body')?.scrollTop || 0));
+  if (!state.collapsed || state.collapsedFor !== b.folder) { loadCollapsed(); state.collapsedFor = b.folder; }
+  const scroll = $app.querySelector('.board')?.scrollTop || 0;
+  const c = b.counters || { total: 0, created: 0, closed: 0 };
+  const ratio = c.created ? `${Math.round((c.closed / c.created) * 100)}%` : '—';
 
   $app.innerHTML = '';
   const top = h(`<header class="topbar">
-    <button class="name" title="${esc(b.folder)}">${esc(b.name)} <small>▾</small></button>
+    <button class="name" title="${esc(b.folder)}">${esc(b.name)} <span class="chev">${ICON.chev}</span></button>
     <div class="counters">
-      <span class="ctr" title="Все незакрытые задачи на доске"><b>${b.counters?.total ?? 0}</b> всего задач</span>
-      <span class="ctr-sep"></span>
-      <span class="ctr" title="Задачи, созданные сегодня"><b>${b.counters?.created ?? 0}</b> создано сегодня</span>
-      <span class="ctr" title="Задачи, закрытые сегодня"><b>${b.counters?.closed ?? 0}</b> закрыто сегодня</span>
+      <span class="ctr" title="Все незакрытые задачи на доске"><b>${c.total}</b> всего задач</span>
+      <span class="ctr" title="Задачи, созданные сегодня"><b>${c.created}</b> создано сегодня</span>
+      <span class="ctr" title="Задачи, закрытые сегодня"><b>${c.closed}</b> закрыто сегодня</span>
+      <span class="ratio" title="Закрыто сегодня / создано сегодня${c.created ? '' : ' — сегодня ещё ничего не создано'}">${ratio}</span>
     </div>
     <span class="spacer"></span>
     ${state.waitFilter ? `<button class="filter-chip" title="Сбросить фильтр (Esc)">Ожидания: ${esc(state.waitFilter)} <span>✕</span></button>` : ''}
-    <button class="icon-btn burger" title="Меню" aria-label="Меню"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5h12M3 9h12M3 13h12"/></svg></button>
+    <button class="icon-btn burger" title="Меню" aria-label="Меню">${ICON.burger}</button>
   </header>`);
   top.querySelector('.name').addEventListener('click', (e) => showMenu(e.currentTarget, [
     { label: 'Сменить папку…', action: async () => showPicker((await api('/api/state')).recent, b.folder) },
@@ -319,34 +346,35 @@ function renderBoard() {
   ]));
   $app.append(top);
 
-  const board = h('<main class="board"></main>');
+  const board = h('<main class="board"><div class="list"></div></main>');
+  const list = board.querySelector('.list');
   if (!b.projects.length) {
-    board.append(h(`<div class="empty"><h2>Проектов пока нет</h2><p>Каждый проект — это .md-файл в папке.</p><button class="btn primary">Создать проект</button></div>`));
-    board.querySelector('button').addEventListener('click', addProject);
-  }
-  if (state.waitFilter) {
-    const shown = b.projects.filter((p) => p.tasks.some((t) => isWaitingFor(t, state.waitFilter)));
-    for (const p of shown) board.append(renderColumn(p));
-    if (!shown.length && b.projects.length) {
-      board.append(h(`<div class="empty"><h2>У исполнителя ${esc(state.waitFilter)} нет задач в ожидании</h2><button class="btn primary">Сбросить фильтр</button></div>`));
-      board.querySelector('.empty button').addEventListener('click', () => setWaitFilter(null));
+    list.append(h(`<div class="empty"><h2>Проектов пока нет</h2><p>Каждый проект — это .md-файл в папке.</p><button class="btn primary">Создать проект</button></div>`));
+    list.querySelector('button').addEventListener('click', addProject);
+  } else {
+    list.append(renderFocus());
+    const filter = state.waitFilter;
+    const shown = filter ? b.projects.filter((p) => p.tasks.some((t) => isWaitingFor(t, filter))) : b.projects;
+    for (const p of shown) list.append(renderProject(p));
+    if (filter && !shown.length) {
+      list.append(h(`<div class="empty"><h2>У исполнителя ${esc(filter)} нет задач в ожидании</h2><button class="btn primary">Сбросить фильтр</button></div>`));
+      list.querySelector('.empty button').addEventListener('click', () => setWaitFilter(null));
     }
-  } else for (const p of b.projects) board.append(renderColumn(p));
-  $app.append(board);
-  board.scrollLeft = scroll;
-  board.querySelectorAll('.column').forEach((c) => { const body = c.querySelector('.col-body'); if (body) body.scrollTop = colScroll[c.dataset.file] || 0; });
-
-  // Новая задача появляется в конце открытых — прокручиваем к ней
-  if (state.revealLast) {
-    const last = board.querySelector(`.column[data-file="${CSS.escape(state.revealLast)}"] .open-cards .card:last-child`);
-    state.revealLast = null;
-    last?.scrollIntoView({ block: 'nearest' });
   }
+  $app.append(board);
+  board.scrollTop = scroll;
+
   const input = board.querySelector('.add-input');
-  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); input.scrollIntoView({ block: 'nearest' }); }
+  if (state.editTitle) {
+    const row = [...board.querySelectorAll('.trow')].find((r) => r._ref.file === state.editTitle.file && r._ref.line === state.editTitle.line && r.dataset.group !== 'focus');
+    state.editTitle = null;
+    if (row) startTitleEdit(row);
+  }
 }
 
 const isWaitingFor = (t, name) => t.status === 'waiting' && t.assignee === name;
+const isOpenTask = (t) => !isDone(t) || t.errors.length;
 
 function setWaitFilter(name) {
   state.waitFilter = name;
@@ -366,103 +394,297 @@ function waitFilterMenu(anchor) {
   showMenu(anchor, items);
 }
 
-function renderColumn(p) {
+function groupHead(key, title, count, cls = '') {
+  const collapsed = state.collapsed.has(key);
+  return h(`<div class="gh${cls}${collapsed ? ' collapsed' : ''}">
+    <span class="chev">${ICON.chev}</span><h2 title="${esc(title)}">${esc(title)}</h2><span class="count">${count}</span>
+  </div>`);
+}
+
+// «В фокусе сегодня»: незакрытые задачи со звездой из всех проектов
+function renderFocus() {
   const filter = state.waitFilter;
-  const open = filter ? p.tasks.filter((t) => isWaitingFor(t, filter)) : p.tasks.filter((t) => !isDone(t) || t.errors.length);
-  const closed = filter ? [] : p.tasks.filter((t) => isDone(t) && !t.errors.length);
-  const col = h(`<section class="column" data-file="${esc(p.file)}">
-    <div class="col-head" draggable="true"><h2 title="${esc(p.title)}">${esc(p.title)}</h2><span class="count">${open.length}</span><button class="icon-btn more" title="Действия">⋯</button></div>
-    <div class="col-body"><div class="cards open-cards"></div></div>
-    <div class="add-wrap"></div>
-  </section>`);
-  const body = col.querySelector('.col-body');
-  const openCards = col.querySelector('.open-cards');
-  for (const t of open) openCards.append(renderCard(p, t));
+  const items = [];
+  for (const p of state.board.projects) for (const t of p.tasks) if (t.focus && !isDone(t) && (!filter || isWaitingFor(t, filter))) items.push([p, t]);
+  const g = h('<section class="group focus-group"></section>');
+  const head = groupHead('focus', 'В фокусе сегодня', items.length, ' focus');
+  head.addEventListener('click', () => toggleCollapsed('focus'));
+  g.append(head);
+  if (state.collapsed.has('focus')) return g;
+  for (const [p, t] of items) g.append(renderRow(p, t, 'focus'));
+  if (!items.length) g.append(h(`<div class="hint-row">Отметьте звездой задачи, которыми займётесь сегодня, — они соберутся здесь.</div>`));
+  return g;
+}
 
-  const addWrap = col.querySelector('.add-wrap');
-  if (filter) addWrap.remove();
-  else if (state.adding?.file === p.file) {
-    const ta = h(`<textarea class="add-input" rows="2" maxlength="${TITLE_MAX}" placeholder="Название задачи… Enter — добавить, Esc — закрыть"></textarea>`);
-    ta.value = state.adding.value;
-    const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
-    ta.addEventListener('input', () => { state.adding.value = ta.value; grow(); });
-    requestAnimationFrame(grow);
-    const counter = attachCounter(ta, true);
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        const title = ta.value.trim();
-        if (!title) return;
-        if (title.length > TITLE_MAX) return;
-        // Поле очищаем только после успешного создания — при ошибке текст остаётся.
-        run({ type: 'create', file: p.file, title }, 'создание задачи', () => { if (state.adding?.file === p.file) state.adding.value = ''; state.revealLast = p.file; }).catch(() => {});
-      } else if (e.key === 'Escape') { state.adding = null; renderBoard(); }
-    });
-    ta.addEventListener('blur', () => setTimeout(() => {
-      if (ta.isConnected && state.adding?.file === p.file && !state.adding.value.trim() && document.activeElement !== ta && !state.pending) { state.adding = null; renderBoard(); }
-    }, 150));
-    addWrap.append(ta, counter);
-  } else {
-    const btn = h('<button class="add-task">+ Задача</button>');
-    btn.addEventListener('click', () => { state.adding = { file: p.file, value: '' }; renderBoard(); });
-    addWrap.append(btn);
-  }
-
-  if (closed.length) {
-    const isOpen = state.openClosed.has(p.file);
-    const tog = h(`<button class="closed-toggle${isOpen ? ' open' : ''}"><span class="chev">›</span> ${closed.some((t) => t.status === 'cancelled') ? 'Закрыто и отменено' : 'Закрыто'} (${closed.length})</button>`);
-    tog.addEventListener('click', () => { isOpen ? state.openClosed.delete(p.file) : state.openClosed.add(p.file); renderBoard(); });
-    body.append(tog);
-    if (isOpen) {
-      const cc = h('<div class="cards closed-cards"></div>');
-      for (const t of closed) cc.append(renderCard(p, t));
-      body.append(cc);
-    }
-  }
-
-  col.querySelector('.more').addEventListener('click', (e) => showMenu(e.currentTarget, [
+function renderProject(p) {
+  const filter = state.waitFilter;
+  const open = filter ? p.tasks.filter((t) => isWaitingFor(t, filter)) : p.tasks.filter(isOpenTask);
+  const closed = filter ? [] : p.tasks.filter((t) => !isOpenTask(t));
+  const g = h(`<section class="group" data-file="${esc(p.file)}"></section>`);
+  const head = groupHead(p.file, p.title, open.length);
+  head.setAttribute('draggable', 'true');
+  head.append(h(`<button class="icon-btn more" title="Действия с проектом">${ICON.more}</button>`));
+  head.addEventListener('click', (e) => { if (!e.target.closest('.more')) toggleCollapsed(p.file); });
+  head.querySelector('.more').addEventListener('click', (e) => showMenu(e.currentTarget, [
     { label: 'Переименовать', action: () => renameProject(p) },
     { label: `Архивировать закрытые${closed.length ? ` (${closed.length})` : ''}`, disabled: !closed.length, action: () => run({ type: 'archiveClosed', file: p.file }, 'архивация закрытых') },
     '-',
     { label: 'Архивировать проект', danger: true, action: () => confirmDialog('Архивировать проект?', `Файл «${p.file}» будет перенесён в папку архив/проекты. Его можно вернуть вручную.`, 'Архивировать', () => run({ type: 'archiveProject', file: p.file }, 'архивация проекта')) },
   ]));
+  g.append(head);
+  setupProjectDnd(g, head, p);
+  if (state.collapsed.has(p.file)) return g;
 
-  setupColumnDnd(col, p);
-  setupCardDrop(col, p);
-  return col;
+  const rows = h('<div class="rows open-rows"></div>');
+  for (const t of open) rows.append(renderRow(p, t, p.file));
+  g.append(rows);
+
+  if (closed.length) {
+    const isOpen = state.openClosed.has(p.file);
+    const label = closed.some((t) => t.status === 'cancelled') ? 'Закрытые и отменённые' : 'Закрытые';
+    const tog = h(`<button class="more-row closed-toggle${isOpen ? ' open' : ''}"><span class="chev">${ICON.chevR}</span>${label}: ${closed.length}</button>`);
+    tog.addEventListener('click', () => { isOpen ? state.openClosed.delete(p.file) : state.openClosed.add(p.file); renderBoard(); });
+    g.append(tog);
+    if (isOpen) {
+      const cr = h('<div class="rows closed-rows"></div>');
+      for (const t of closed) cr.append(renderRow(p, t, p.file));
+      g.append(cr);
+    }
+  }
+
+  if (!filter) {
+    if (state.adding?.file === p.file) {
+      const wrap = h(`<div class="add-row-wrap"><input class="add-input" maxlength="${TITLE_MAX}" placeholder="Название задачи… Enter — добавить, Esc — закрыть"></div>`);
+      const inp = wrap.querySelector('input');
+      inp.value = state.adding.value;
+      inp.addEventListener('input', () => { state.adding.value = inp.value; });
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const title = inp.value.trim();
+          if (!title) return;
+          // Поле очищаем только после успешного создания — при ошибке текст остаётся
+          run({ type: 'create', file: p.file, title }, 'создание задачи', () => { if (state.adding?.file === p.file) state.adding.value = ''; }).catch(() => {});
+        } else if (e.key === 'Escape') { e.stopPropagation(); state.adding = null; renderBoard(); }
+      });
+      inp.addEventListener('blur', () => setTimeout(() => {
+        if (inp.isConnected && state.adding?.file === p.file && !state.adding.value.trim() && document.activeElement !== inp && !state.pending) { state.adding = null; renderBoard(); }
+      }, 150));
+      g.append(wrap);
+    } else {
+      const add = h(`<button class="more-row add-task"><span class="chev">${ICON.plus}</span>Задача</button>`);
+      add.addEventListener('click', () => { state.adding = { file: p.file, value: '' }; renderBoard(); });
+      g.append(add);
+    }
+  }
+  setupRowDrop(g, p);
+  return g;
 }
 
-function renderCard(p, t) {
+const STATUS_DOT = { new: 'new', progress: 'progress', waiting: 'waiting', closed: 'closed', cancelled: 'cancelled', error: 'error' };
+
+function dueCell(t) {
+  if (t.status !== 'waiting') return '';
+  if (validDate(t.deadline)) return `<button class="ed due${t.overdue ? ' over' : ''}" data-f="due" title="Вернуться до ${esc(ruDate(t.deadline))}">${esc(dueText(t.deadline))}</button>`;
+  if (t.overdue && validDate(t.waiting)) return `<button class="ed due over" data-f="due" title="Ждём ответа с ${esc(ruDate(t.waiting))}. Нажмите, чтобы указать срок">ждём ${daysBetween(t.waiting, state.board.today)} дн.</button>`;
+  return '<button class="ed due blank" data-f="due">+ срок</button>';
+}
+
+function renderRow(p, t, group) {
   const st = shownStatus(t);
   const sel = state.panel && state.panel.file === p.file && state.panel.line === t.line;
-  const card = h(`<article class="card${isDone(t) ? ' closed' : ''}${t.status === 'cancelled' ? ' cancelled' : ''}${t.errors.length ? ' has-error' : ''}${t.overdue && !t.errors.length ? ' overdue' : ''}${sel ? ' selected' : ''}" draggable="true">
-    <div class="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</div>
-    <div class="card-row">
-      <span class="slot-person">${t.assignee ? `<span class="person" title="${esc(t.assignee)}"><span class="avatar">${esc(initials(t.assignee))}</span><span class="nm">${esc(t.assignee)}</span></span>` : ''}</span>
-      <span class="slot-tag">${t.tag ? tagChip(t.tag) : ''}</span>
-    </div>
-    <div class="card-row">
-      <button class="pill ${st}" title="Сменить статус">${STATUS_LABEL[st]}</button>
-      <span class="when">${esc(whenText(t))}</span>
-    </div>
-  </article>`);
-  card._ref = { file: p.file, line: t.line, lineNo: t.lineNo };
-  card.addEventListener('click', (e) => { if (!e.target.closest('.pill')) openPanel(p.file, t); });
-  card.querySelector('.pill').addEventListener('click', (e) => { e.stopPropagation(); statusMenu(e.currentTarget, p.file, t); });
-  card.addEventListener('dragstart', (e) => {
-    e.stopPropagation();
-    drag = { kind: 'card', ref: card._ref };
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', t.title);
-    setTimeout(() => card.classList.add('dragging'), 0);
+  const cls = ['trow', isDone(t) && !t.errors.length ? 'done' : '', t.status === 'cancelled' ? 'cancelled' : '', sel ? 'selected' : ''].filter(Boolean).join(' ');
+  const row = h(`<div class="${cls}" data-group="${esc(group)}">
+    <button class="star${t.focus ? ' on' : ''}" title="${t.focus ? 'Убрать из фокуса' : 'В фокус на сегодня'}">${ICON.star(t.focus)}</button>
+    <button class="ed st" data-f="status" title="Сменить статус"><span class="dot ${STATUS_DOT[st]}"></span><span class="st-label">${STATUS_LABEL[st]}</span></button>
+    <span class="cell-title"><button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button></span>
+    <span class="cell-tag">${t.tag ? `<button class="ed tagpill" data-f="tag" style="${tagStyle(t.tag)}" title="${esc(t.tag)}">${esc(t.tag)}</button>` : '<button class="ed blank" data-f="tag">+ тэг</button>'}</span>
+    <span class="cell-who"><button class="ed who${t.assignee ? '' : ' blank'}" data-f="assignee" title="${esc(t.assignee || 'Выбрать исполнителя')}">${esc(t.assignee || '+ исполнитель')}</button></span>
+    <span class="cell-due">${dueCell(t)}</span>
+    <button class="open-btn" title="Открыть задачу: даты, комментарий, удаление">${ICON.open}</button>
+  </div>`);
+  row._ref = { file: p.file, line: t.line, lineNo: t.lineNo };
+  row.addEventListener('click', (e) => {
+    const f = e.target.closest('[data-f]')?.dataset.f;
+    if (e.target.closest('.star')) return updateTask(p.file, t, { focus: !t.focus }, t.focus ? 'снятие фокуса' : 'фокус');
+    if (f === 'status') return statusMenu(e.target.closest('[data-f]'), p.file, t);
+    if (f === 'title') return startTitleEdit(row);
+    if (f === 'tag') return tagMenu(e.target.closest('[data-f]'), t.tag, (v) => updateTask(p.file, t, { tag: v }, 'смена тэга'));
+    if (f === 'assignee') return assigneeMenu(e.target.closest('[data-f]'), t.assignee, (v) => updateTask(p.file, t, { assignee: v }, 'смена исполнителя'));
+    if (f === 'due') return duePopover(e.target.closest('[data-f]'), p.file, t);
+    openPanel(p.file, t);
   });
-  card.addEventListener('dragend', () => { card.classList.remove('dragging'); clearDrop(); drag = null; });
-  return card;
+  if (group !== 'focus') {
+    row.setAttribute('draggable', 'true');
+    row.addEventListener('dragstart', (e) => {
+      if (row.querySelector('.title-edit')) { e.preventDefault(); return; }
+      e.stopPropagation();
+      drag = { kind: 'row', ref: row._ref };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', t.title);
+      setTimeout(() => row.classList.add('dragging'), 0);
+    });
+    row.addEventListener('dragend', () => { row.classList.remove('dragging'); clearDrop(); drag = null; });
+  }
+  return row;
+}
+
+// Название правится прямо в строке: Enter — сохранить, Esc — отменить
+function startTitleEdit(row) {
+  const btn = row.querySelector('[data-f="title"]');
+  if (!btn) return;
+  const { file, line } = row._ref;
+  const f = findTask(file, line);
+  if (!f?.t) return;
+  const inp = h(`<input class="title-edit" maxlength="${TITLE_MAX}">`);
+  inp.value = f.t.title;
+  btn.replaceWith(inp);
+  row.setAttribute('draggable', 'false');
+  inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const v = inp.value.trim();
+    if (save && v && v !== f.t.title) updateTask(file, f.t, { title: v }, 'переименование задачи');
+    else renderBoard();
+  };
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+  });
+  inp.addEventListener('blur', () => finish(true));
+  inp.addEventListener('click', (e) => e.stopPropagation());
+}
+
+// Выбор исполнителя: сначала группа, потом человек. Если групп нет — сразу список людей.
+function assigneeMenu(anchor, current, onPick, group) {
+  const all = state.board.peopleGroups || state.board.people.map((name) => ({ name, group: '' }));
+  const groups = [...new Set(all.map((p) => p.group))];
+  const none = { html: '<span class="faint">Без исполнителя</span>', active: !current, action: () => onPick('') };
+  const person = (p) => ({ html: `<span class="grow">${esc(p.name)}</span>`, active: current === p.name, action: () => onPick(p.name) });
+  if (!all.length) return showMenu(anchor, [none, { label: 'Справочник пуст — добавьте в меню ☰ → «Исполнители»', disabled: true, action: () => {} }]);
+  if (groups.length === 1 && groups[0] === '') return showMenu(anchor, [...all.map(person), '-', none]);
+  if (group === undefined) {
+    return showMenu(anchor, [
+      ...groups.map((g) => {
+        const people = all.filter((p) => p.group === g);
+        const has = people.some((p) => p.name === current);
+        return { html: `<span class="grow${has ? ' strong' : ''}">${esc(g || 'Без группы')}</span><span class="menu-count">${people.length} ›</span>`, keep: true, action: (a) => assigneeMenu(a, current, onPick, g) };
+      }),
+      '-', none,
+    ]);
+  }
+  showMenu(anchor, [
+    { html: `<span class="menu-back">‹ ${esc(group || 'Без группы')}</span>`, keep: true, action: (a) => assigneeMenu(a, current, onPick) },
+    '-',
+    ...all.filter((p) => p.group === group).map(person),
+  ]);
+}
+
+function tagMenu(anchor, current, onPick) {
+  const tags = state.board.tags || [];
+  showMenu(anchor, [
+    ...tags.map((n) => ({ html: tagChip(n), active: current === n, action: () => onPick(n) })),
+    ...(tags.length ? ['-'] : [{ label: 'Тэгов нет — добавьте в меню ☰ → «Тэги»', disabled: true, action: () => {} }]),
+    { html: '<span class="faint">Без тэга</span>', active: !current, action: () => onPick('') },
+  ]);
+}
+
+// Срок «вернуться до» в строке: поле с маской даты
+function duePopover(anchor, file, t) {
+  const el = h(`<div class="popover-form">
+    <span class="pop-label">Вернуться до</span>
+    <input class="field" placeholder="дд.мм.гггг">
+    ${t.deadline ? '<button class="btn subtle clear">Убрать срок</button>' : ''}
+  </div>`);
+  const inp = el.querySelector('input');
+  maskDate(inp);
+  inp.value = validDate(t.deadline) ? ruDate(t.deadline) : '';
+  const save = () => {
+    const v = inp.value.trim();
+    const iso = v ? parseRuDate(v) : '';
+    if (iso === null) return toast('Дата должна быть в формате ДД.ММ.ГГГГ', true);
+    closeMenu();
+    if (iso !== (t.deadline || '')) updateTask(file, t, { deadline: iso }, 'изменение срока');
+  };
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); } });
+  el.querySelector('.clear')?.addEventListener('click', () => { closeMenu(); updateTask(file, t, { deadline: '' }, 'изменение срока'); });
+  showPopover(anchor, el);
+  inp.focus(); inp.select();
+}
+
+// ---------- перетаскивание ----------
+let drag = null;
+let dropMarker = null;
+function clearDrop() {
+  dropMarker?.remove(); dropMarker = null;
+  document.querySelectorAll('.drag-over').forEach((c) => c.classList.remove('drag-over'));
+}
+
+// Задачи перетаскиваются внутри проекта и между проектами
+function setupRowDrop(g, p) {
+  const findBefore = (container, y) => [...container.querySelectorAll('.trow:not(.dragging)')].find((r) => { const b = r.getBoundingClientRect(); return y < b.top + b.height / 2; }) || null;
+  g.addEventListener('dragover', (e) => {
+    if (drag?.kind !== 'row') return;
+    e.preventDefault();
+    const container = e.target.closest('.rows') || g.querySelector('.open-rows');
+    if (!container) return;
+    const before = findBefore(container, e.clientY);
+    if (!dropMarker) dropMarker = h('<div class="drop-line"></div>');
+    if (before) container.insertBefore(dropMarker, before); else container.append(dropMarker);
+    dropMarker._before = before; dropMarker._container = container;
+  });
+  g.addEventListener('dragleave', (e) => { if (!g.contains(e.relatedTarget)) { dropMarker?.remove(); dropMarker = null; } });
+  g.addEventListener('drop', (e) => {
+    if (drag?.kind !== 'row' || !dropMarker) return;
+    e.preventDefault();
+    let before = dropMarker._before?._ref || null;
+    // Сброс в конец открытых задач: вставляем перед первой закрытой, чтобы задача не ушла в хвост
+    if (!before && dropMarker._container.classList.contains('open-rows')) {
+      const closedT = p.tasks.find((t) => !isOpenTask(t) && t.line !== drag.ref.line);
+      if (closedT) before = { line: closedT.line, lineNo: closedT.lineNo };
+    }
+    const ref = drag.ref;
+    clearDrop();
+    if (before && before.line === ref.line && before.lineNo === ref.lineNo && ref.file === p.file) return;
+    const followPanel = state.panel && state.panel.file === ref.file && state.panel.line === ref.line;
+    run({ type: 'move', file: ref.file, ref: { line: ref.line, lineNo: ref.lineNo }, toFile: p.file, beforeRef: before }, 'перенос задачи', (r) => {
+      if (followPanel && r.task && state.panel) Object.assign(state.panel, { file: r.task.file, line: r.task.line });
+    }).catch(() => {});
+  });
+}
+
+// Проекты переставляются перетаскиванием заголовка
+function setupProjectDnd(g, head, p) {
+  head.addEventListener('dragstart', (e) => {
+    drag = { kind: 'project', file: p.file };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', p.title);
+    setTimeout(() => g.classList.add('dragging'), 0);
+  });
+  head.addEventListener('dragend', () => { g.classList.remove('dragging'); clearDrop(); drag = null; });
+  g.addEventListener('dragover', (e) => {
+    if (drag?.kind !== 'project' || drag.file === p.file) return;
+    e.preventDefault();
+    document.querySelectorAll('.drag-over').forEach((x) => x !== g && x.classList.remove('drag-over'));
+    g.classList.add('drag-over');
+  });
+  g.addEventListener('drop', (e) => {
+    if (drag?.kind !== 'project' || drag.file === p.file) return;
+    e.preventDefault();
+    const files = state.board.projects.map((x) => x.file).filter((f) => f !== drag.file);
+    const r = g.getBoundingClientRect();
+    const idx = files.indexOf(p.file) + (e.clientY > r.top + Math.min(r.height / 2, 40) ? 1 : 0);
+    files.splice(idx, 0, drag.file);
+    clearDrop();
+    run({ type: 'reorderProjects', order: files }, 'порядок проектов').catch(() => {});
+  });
 }
 
 function statusMenu(anchor, file, t) {
   showMenu(anchor, STATUSES.map((s) => ({
-    html: `<span class="pill ${s.id}">${s.label}</span>`,
+    html: `<span class="status-opt"><span class="dot ${s.id}"></span>${s.label}</span>`,
     active: t.status === s.id && !t.errors.some((e) => e.startsWith('Неизвестный')),
     action: () => {
       flushPanel();
@@ -502,74 +724,6 @@ function updateTask(file, t, patch, label = 'изменение задачи') {
   }).catch(() => {});
 }
 
-// ---------- перетаскивание ----------
-let drag = null;
-let dropMarker = null;
-function clearDrop() {
-  dropMarker?.remove(); dropMarker = null;
-  document.querySelectorAll('.drag-over-col').forEach((c) => c.classList.remove('drag-over-col'));
-}
-
-function setupCardDrop(col, p) {
-  const body = col.querySelector('.col-body');
-  const findBefore = (container, y) => [...container.querySelectorAll('.card:not(.dragging)')].find((c) => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; }) || null;
-  body.addEventListener('dragover', (e) => {
-    if (drag?.kind !== 'card') return;
-    e.preventDefault();
-    const container = e.target.closest('.cards') || col.querySelector('.open-cards');
-    const before = findBefore(container, e.clientY);
-    if (!dropMarker) dropMarker = h('<div class="drop-line"></div>');
-    if (before) container.insertBefore(dropMarker, before); else container.append(dropMarker);
-    dropMarker._before = before; dropMarker._file = p.file; dropMarker._container = container;
-  });
-  body.addEventListener('dragleave', (e) => { if (!body.contains(e.relatedTarget)) { dropMarker?.remove(); dropMarker = null; } });
-  body.addEventListener('drop', (e) => {
-    if (drag?.kind !== 'card' || !dropMarker) return;
-    e.preventDefault();
-    let before = dropMarker._before?._ref || null;
-    // Сброс в конец открытых задач: вставляем перед первой закрытой, чтобы задача не ушла в хвост
-    if (!before && dropMarker._container.classList.contains('open-cards')) {
-      const proj = state.board.projects.find((x) => x.file === p.file);
-      const closedT = proj.tasks.find((t) => isDone(t) && !t.errors.length && t.line !== drag.ref.line);
-      if (closedT) before = { line: closedT.line, lineNo: closedT.lineNo };
-    }
-    const ref = drag.ref;
-    clearDrop();
-    if (before && before.line === ref.line && before.lineNo === ref.lineNo && ref.file === p.file) return;
-    const followPanel = state.panel && state.panel.file === ref.file && state.panel.line === ref.line;
-    run({ type: 'move', file: ref.file, ref: { line: ref.line, lineNo: ref.lineNo }, toFile: p.file, beforeRef: before }, 'перенос задачи', (r) => {
-      if (followPanel && r.task && state.panel) Object.assign(state.panel, { file: r.task.file, line: r.task.line });
-    }).catch(() => {});
-  });
-}
-
-function setupColumnDnd(col, p) {
-  const head = col.querySelector('.col-head');
-  head.addEventListener('dragstart', (e) => {
-    drag = { kind: 'col', file: p.file };
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', p.title);
-    setTimeout(() => col.classList.add('dragging'), 0);
-  });
-  head.addEventListener('dragend', () => { col.classList.remove('dragging'); clearDrop(); drag = null; });
-  col.addEventListener('dragover', (e) => {
-    if (drag?.kind !== 'col' || drag.file === p.file) return;
-    e.preventDefault();
-    document.querySelectorAll('.drag-over-col').forEach((c) => c !== col && c.classList.remove('drag-over-col'));
-    col.classList.add('drag-over-col');
-  });
-  col.addEventListener('drop', (e) => {
-    if (drag?.kind !== 'col' || drag.file === p.file) return;
-    e.preventDefault();
-    const files = state.board.projects.map((x) => x.file).filter((f) => f !== drag.file);
-    const r = col.getBoundingClientRect();
-    const idx = files.indexOf(p.file) + (e.clientX > r.left + r.width / 2 ? 1 : 0);
-    files.splice(idx, 0, drag.file);
-    clearDrop();
-    run({ type: 'reorderProjects', order: files }, 'порядок колонок').catch(() => {});
-  });
-}
-
 // ---------- меню ----------
 let menuEl = null;
 function closeMenu() { menuEl?.remove(); menuEl = null; }
@@ -586,7 +740,18 @@ function showMenu(anchor, items) {
   document.body.append(menuEl);
   const r = anchor.getBoundingClientRect();
   const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
-  menuEl.style.left = Math.min(r.left, innerWidth - mw - 8) + 'px';
+  menuEl.style.left = Math.max(8, Math.min(r.left, innerWidth - mw - 8)) + 'px';
+  menuEl.style.top = (r.bottom + 4 + mh > innerHeight ? r.top - mh - 4 : r.bottom + 4) + 'px';
+}
+// Всплывающая форма (например, срок) — в том же слое, что и меню
+function showPopover(anchor, el) {
+  closeMenu();
+  menuEl = h('<div class="menu popover"></div>');
+  menuEl.append(el);
+  document.body.append(menuEl);
+  const r = anchor.getBoundingClientRect();
+  const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+  menuEl.style.left = Math.max(8, Math.min(r.left, innerWidth - mw - 8)) + 'px';
   menuEl.style.top = (r.bottom + 4 + mh > innerHeight ? r.top - mh - 4 : r.bottom + 4) + 'px';
 }
 document.addEventListener('mousedown', (e) => { if (menuEl && !menuEl.contains(e.target)) closeMenu(); });
@@ -693,15 +858,77 @@ function showDirectory(cfg) {
   input.focus();
 }
 
+// Исполнители со структурой: группы (Риски, Право…) и люди в них. Без группы — как раньше.
+function groupMenu(anchor, current, onPick) {
+  const groups = [...new Set((state.board.peopleGroups || []).map((p) => p.group).filter(Boolean))];
+  showMenu(anchor, [
+    ...groups.map((g) => ({ html: `<span class="grow">${esc(g)}</span>`, active: current === g, action: () => onPick(g) })),
+    { html: '<span class="faint">Без группы</span>', active: !current, action: () => onPick('') },
+    '-',
+    { label: 'Новая группа…', action: (a) => {
+      const el = h('<div class="popover-form"><span class="pop-label">Новая группа</span><input class="field" maxlength="60" placeholder="Например, Риски"></div>');
+      const inp = el.querySelector('input');
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && inp.value.trim()) { closeMenu(); onPick(inp.value.trim()); }
+        if (e.key === 'Escape') { e.stopPropagation(); closeMenu(); }
+      });
+      showPopover(a, el); inp.focus();
+    } },
+  ]);
+}
+
 function showPeople() {
-  showDirectory({
-    title: 'Исполнители', max: 100, placeholder: 'Имя нового исполнителя',
-    empty: 'Справочник пуст. Имена хранятся в файле _исполнители.md',
-    items: () => state.board.people,
-    badge: (name) => `<span class="avatar">${esc(initials(name))}</span>`,
-    ops: { add: 'personAdd', rename: 'personRename', del: 'personDelete' },
-    labels: { add: 'добавление исполнителя', rename: 'переименование исполнителя', del: 'удаление исполнителя' },
-  });
+  let addGroup = '';
+  const wrap = h(`<div class="people-dlg">
+    <div class="pgroups"></div>
+    <div class="add-row"><input class="field" maxlength="100" placeholder="Имя нового исполнителя"><button class="btn pick-group" title="Группа нового исполнителя"></button><button class="btn primary add">Добавить</button></div>
+    <p class="dlg-hint">Группа меняется кнопкой справа от имени. Новая группа появляется вместе с первым человеком в ней, пустая исчезает сама.</p>
+  </div>`);
+  const input = wrap.querySelector('input');
+  const pickBtn = wrap.querySelector('.pick-group');
+  const drawPick = () => { pickBtn.innerHTML = `${esc(addGroup || 'Без группы')} <span class="chev">${ICON.chev}</span>`; };
+  pickBtn.addEventListener('click', () => groupMenu(pickBtn, addGroup, (g) => { addGroup = g; drawPick(); input.focus(); }));
+  drawPick();
+
+  const inlineEdit = (el, value, onSave, redraw) => {
+    const inp = h(`<input class="field" maxlength="100" value="${esc(value)}">`);
+    el.replaceWith(inp);
+    inp.focus(); inp.select();
+    let done = false;
+    const save = async () => { if (done) return; done = true; const v = inp.value.trim(); if (v && v !== value) await onSave(v); redraw(); };
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { e.stopPropagation(); done = true; redraw(); } });
+    inp.addEventListener('blur', save);
+  };
+
+  const draw = () => {
+    const box = wrap.querySelector('.pgroups');
+    box.innerHTML = '';
+    const all = state.board.peopleGroups || [];
+    if (!all.length) { box.append(h('<p class="faint">Справочник пуст. Имена хранятся в файле _исполнители.md</p>')); return; }
+    for (const g of [...new Set(all.map((p) => p.group))]) {
+      const sec = h(`<div class="pgroup"><div class="pg-head"><span class="pg-name">${esc(g || 'Без группы')}</span>${g ? '<button class="icon-btn ren" title="Переименовать группу">✎</button>' : ''}<span class="menu-count">${all.filter((p) => p.group === g).length}</span></div><ul class="people-list"></ul></div>`);
+      sec.querySelector('.ren')?.addEventListener('click', () => inlineEdit(sec.querySelector('.pg-name'), g, (v) => run({ type: 'groupRename', from: g, to: v }, 'переименование группы').catch(() => {}), draw));
+      const ul = sec.querySelector('ul');
+      for (const p of all.filter((x) => x.group === g)) {
+        const li = h(`<li><span class="nm">${esc(p.name)}</span><button class="btn subtle grp" title="Перенести в другую группу">${esc(p.group || 'Без группы')} <span class="chev">${ICON.chev}</span></button><button class="icon-btn ren" title="Переименовать">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
+        li.querySelector('.grp').addEventListener('click', (e) => groupMenu(e.currentTarget, p.group, async (ng) => { await run({ type: 'personGroup', name: p.name, group: ng }, 'смена группы исполнителя').catch(() => {}); draw(); }));
+        li.querySelector('.ren').addEventListener('click', () => inlineEdit(li.querySelector('.nm'), p.name, (v) => run({ type: 'personRename', from: p.name, to: v }, 'переименование исполнителя').catch(() => {}), draw));
+        li.querySelector('.del').addEventListener('click', async () => { await run({ type: 'personDelete', name: p.name }, 'удаление исполнителя').catch(() => {}); draw(); });
+        ul.append(li);
+      }
+      box.append(sec);
+    }
+  };
+  const add = async () => {
+    const v = input.value.trim(); if (!v) return; input.value = '';
+    await run({ type: 'personAdd', name: v, group: addGroup }, 'добавление исполнителя').catch(() => {});
+    draw(); input.focus();
+  };
+  wrap.querySelector('.add').addEventListener('click', add);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  draw();
+  modal('Исполнители', wrap, [{ label: 'Готово', action: closeModal }]);
+  input.focus();
 }
 
 function showTags() {
@@ -753,7 +980,7 @@ function closePanel() {
   state.panel = null;
   $panel.hidden = true;
   $panel.innerHTML = '';
-  if (state.mode === 'board') $app.querySelectorAll('.card.selected').forEach((c) => c.classList.remove('selected'));
+  if (state.mode === 'board') $app.querySelectorAll('.trow.selected').forEach((c) => c.classList.remove('selected'));
 }
 
 let descTimer = null;
@@ -769,7 +996,8 @@ function buildPanel() {
       <textarea class="title-input" rows="1" maxlength="${TITLE_MAX}" placeholder="Без названия"></textarea>
       <div class="errors" hidden></div>
       <div class="props">
-        <div class="label" data-row="status">Статус</div><div class="val" data-row="status"><button class="pick status-pick" title="Сменить статус"><span class="pill status-pill"></span></button></div>
+        <div class="label" data-row="status">Статус</div><div class="val" data-row="status"><button class="pick status-pick" title="Сменить статус"><span class="dot status-dot"></span><span class="status-text"></span></button></div>
+        <div class="label" data-row="focus">Фокус</div><div class="val" data-row="focus"><button class="pick focus-pick" title="В фокус на сегодня"></button></div>
         <div class="label" data-row="assignee">Исполнитель</div><div class="val" data-row="assignee"><button class="pick assignee-pick" title="Выбрать исполнителя"></button></div>
         <div class="label" data-row="tag">Тэг</div><div class="val" data-row="tag"><button class="pick tag-pick" title="Выбрать тэг"></button></div>
         <div class="label" data-row="created">Создана</div><div class="val" data-row="created"><input data-k="created" placeholder="дд.мм.гггг"><span class="raw" data-raw="created"></span></div>
@@ -798,22 +1026,17 @@ function buildPanel() {
   title.addEventListener('change', () => { const f = cur(); const v = title.value.trim(); if (f?.t && v && v !== f.t.title) patch({ title: v }, 'переименование задачи'); });
 
   $panel.querySelector('.status-pick').addEventListener('click', (e) => { const f = cur(); if (f?.t) statusMenu(e.currentTarget, state.panel.file, f.t); });
-  // Исполнитель и тэг выбираются из такого же списка, как статус
+  // Исполнитель и тэг выбираются из таких же меню, как в строке задачи
   $panel.querySelector('.assignee-pick').addEventListener('click', (e) => {
     const f = cur(); if (!f?.t) return;
-    showMenu(e.currentTarget, [
-      { html: '<span class="faint">—  без исполнителя</span>', active: !f.t.assignee, action: () => patch({ assignee: '' }, 'смена исполнителя') },
-      ...state.board.people.map((n) => ({ html: personHtml(n), active: f.t.assignee === n, action: () => patch({ assignee: n }, 'смена исполнителя') })),
-    ]);
+    assigneeMenu(e.currentTarget, f.t.assignee, (v) => patch({ assignee: v }, 'смена исполнителя'));
   });
   $panel.querySelector('.tag-pick').addEventListener('click', (e) => {
     const f = cur(); if (!f?.t) return;
-    const tags = state.board.tags || [];
-    showMenu(e.currentTarget, [
-      { html: '<span class="faint">—  без тэга</span>', active: !f.t.tag, action: () => patch({ tag: '' }, 'смена тэга') },
-      ...tags.map((n) => ({ html: tagChip(n), active: f.t.tag === n, action: () => patch({ tag: n }, 'смена тэга') })),
-      ...(tags.length ? [] : [{ label: 'Тэгов нет — добавьте в меню ☰ → «Тэги»', disabled: true, action: () => {} }]),
-    ]);
+    tagMenu(e.currentTarget, f.t.tag, (v) => patch({ tag: v }, 'смена тэга'));
+  });
+  $panel.querySelector('.focus-pick').addEventListener('click', () => {
+    const f = cur(); if (f?.t) patch({ focus: !f.t.focus }, f.t.focus ? 'снятие фокуса' : 'фокус');
   });
   $panel.querySelectorAll('input[data-k]').forEach((inp) => {
     maskDate(inp);
@@ -867,9 +1090,9 @@ function syncPanel(force = false) {
   $panel.querySelector('.file').textContent = p.file;
   const title = $panel.querySelector('.title-input');
   if (force || active !== title) { title.value = t.title; title._updateCounter?.(); title.style.height = 'auto'; title.style.height = title.scrollHeight + 'px'; }
-  const sp = $panel.querySelector('.status-pill');
-  sp.className = `pill status-pill ${t.status === 'error' ? 'error' : t.status}`;
-  sp.textContent = t.status === 'error' ? `[${t.char}] — выберите статус` : STATUS_LABEL[t.status];
+  $panel.querySelector('.status-dot').className = `dot status-dot ${t.status === 'error' ? 'error' : t.status}`;
+  $panel.querySelector('.status-text').textContent = t.status === 'error' ? `[${t.char}] — выберите статус` : STATUS_LABEL[t.status];
+  $panel.querySelector('.focus-pick').innerHTML = `<span class="star${t.focus ? ' on' : ''}">${ICON.star(t.focus)}</span><span class="${t.focus ? '' : 'faint'}">${t.focus ? 'В фокусе сегодня' : 'Не в фокусе'}</span>`;
 
   $panel.querySelector('.assignee-pick').innerHTML = t.assignee ? personHtml(t.assignee) : '<span class="faint">—</span>';
   $panel.querySelector('.tag-pick').innerHTML = t.tag ? tagChip(t.tag) : '<span class="faint">—</span>';

@@ -1,7 +1,7 @@
 {
   "name": "taskboard",
-  "version": "1.9.0",
-  "description": "Локальная канбан-доска поверх .md-файлов",
+  "version": "2.0.0",
+  "description": "Локальная доска задач поверх .md-файлов",
   "type": "module",
   "private": true,
   "scripts": {

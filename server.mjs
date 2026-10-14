@@ -104,6 +104,11 @@ function checkName(name, what = 'Название') {
   if (n.length > 100) throw new HttpError(400, `${what} слишком длинное`);
   return n;
 }
+function checkGroup(group) {
+  const g = String(group || '').replace(/\s+/g, ' ').trim();
+  if (g.length > 60) throw new HttpError(400, 'Название группы слишком длинное');
+  return g;
+}
 function checkProjectName(name) {
   const n = checkName(name, 'Название проекта');
   if (/[\\/:*?"<>|]/.test(n) || n.startsWith('.') || n.startsWith('_')) throw new HttpError(400, 'Название содержит недопустимые символы');
@@ -127,6 +132,7 @@ async function readSettings() {
 // Содержимое _board.json с изменёнными ключами — остальное сохраняется
 async function boardJsonWith(patch) { return JSON.stringify({ ...(await readBoardJson()), ...patch }, null, 2) + '\n'; }
 async function readPeople() { return md.parsePeople((await readRel(PEOPLE_FILE)) || ''); }
+async function readPeopleGroups() { return md.parsePeopleGroups((await readRel(PEOPLE_FILE)) || ''); }
 async function readTagList() { return md.parseTags((await readRel(TAGS_FILE)) || ''); }
 async function readTags() { return (await readTagList()).map((t) => t.name); }
 
@@ -173,6 +179,7 @@ async function getBoard() {
     return a.localeCompare(b, 'ru');
   });
   const people = await readPeople();
+  const peopleGroups = await readPeopleGroups();
   const tagList = await readTagList();
   const tags = tagList.map((t) => t.name);
   const tagColors = Object.fromEntries(tagList.filter((t) => t.color).map((t) => [t.name, t.color]));
@@ -186,13 +193,13 @@ async function getBoard() {
       file, title: p.title,
       tasks: p.tasks.map((t) => ({
         line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char,
-        assignee: t.assignee, tag: t.tag, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, cancelled: t.cancelled, result: t.result,
+        assignee: t.assignee, tag: t.tag, focus: t.focus, id: t.id, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, cancelled: t.cancelled, result: t.result,
         description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays),
       })),
     });
   }
   const counters = md.dayCounters(projects.flatMap((p) => p.tasks), await readArchivedTasks(), now);
-  return { folder, name: path.basename(folder), projects, people, tags, tagColors, counters, today: now, settings, version: VERSION };
+  return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION };
 }
 
 // ---------- операции ----------
@@ -339,21 +346,22 @@ const ops = {
     return { files: { [ORDER_FILE]: await boardJsonWith({ settings }) }, log: cur.overdueDays === d ? [] : [{ project: 'Настройки', text: `дней ожидания до напоминания: ${cur.overdueDays} → ${d}`, kind: 'настройки', from: String(cur.overdueDays), to: String(d) }] };
   },
 
-  async personAdd({ name }) {
+  async personAdd({ name, group }) {
     const n = checkName(name, 'Имя');
+    const g = checkGroup(group);
     const text = (await readRel(PEOPLE_FILE)) || '';
-    const people = md.parsePeople(text);
-    if (people.includes(n)) throw new HttpError(409, 'Такой исполнитель уже есть');
-    return { files: { [PEOPLE_FILE]: md.formatPeople([...people, n], text) }, log: [{ project: 'Исполнители', text: `добавлен: ${n}`, kind: 'исполнители', to: n }] };
+    const people = md.parsePeopleGroups(text);
+    if (people.some((p) => p.name === n)) throw new HttpError(409, 'Такой исполнитель уже есть');
+    return { files: { [PEOPLE_FILE]: md.formatPeopleGroups([...people, { name: n, group: g }], text) }, log: [{ project: 'Исполнители', text: `добавлен: ${n}${g ? ` (${g})` : ''}`, kind: 'исполнители', to: n }] };
   },
 
   async personRename({ from, to }) {
     const n = checkName(to, 'Имя');
     const text = (await readRel(PEOPLE_FILE)) || '';
-    const people = md.parsePeople(text);
-    if (!people.includes(from)) throw new HttpError(409, 'Исполнитель не найден');
-    if (n !== from && people.includes(n)) throw new HttpError(409, 'Такой исполнитель уже есть');
-    const files = { [PEOPLE_FILE]: md.formatPeople(people.map((p) => (p === from ? n : p)), text) };
+    const people = md.parsePeopleGroups(text);
+    if (!people.some((p) => p.name === from)) throw new HttpError(409, 'Исполнитель не найден');
+    if (n !== from && people.some((p) => p.name === n)) throw new HttpError(409, 'Такой исполнитель уже есть');
+    const files = { [PEOPLE_FILE]: md.formatPeopleGroups(people.map((p) => (p.name === from ? { ...p, name: n } : p)), text) };
     for (const file of await listProjectFiles()) {
       let t = await readRel(file);
       const tasks = md.parseProject(t, file).tasks.filter((x) => x.assignee === from);
@@ -364,16 +372,44 @@ const ops = {
     return { files, log: [{ project: 'Исполнители', text: `переименован: ${from} → ${n} (во всех задачах)`, kind: 'исполнители', from, to: n }] };
   },
 
+  // Переносит исполнителя в группу; новая группа появляется сама, пустая исчезает
+  async personGroup({ name, group }) {
+    const g = checkGroup(group);
+    const text = (await readRel(PEOPLE_FILE)) || '';
+    const people = md.parsePeopleGroups(text);
+    const p = people.find((x) => x.name === name);
+    if (!p) throw new HttpError(409, 'Исполнитель не найден');
+    if (p.group === g) return { files: {} };
+    const from = p.group;
+    const rest = people.filter((x) => x.name !== name);
+    // В конец своей новой группы, чтобы порядок внутри групп не прыгал
+    const lastIdx = rest.map((x) => x.group).lastIndexOf(g);
+    rest.splice(lastIdx < 0 ? rest.length : lastIdx + 1, 0, { name, group: g });
+    return { files: { [PEOPLE_FILE]: md.formatPeopleGroups(rest, text) }, log: [{ project: 'Исполнители', text: `${name}: группа ${from || '—'} → ${g || '—'}`, kind: 'группа исполнителя', from: from || '', to: g || '' }] };
+  },
+
+  async groupRename({ from, to }) {
+    const g = checkGroup(to);
+    if (!g) throw new HttpError(400, 'Название группы не может быть пустым');
+    const text = (await readRel(PEOPLE_FILE)) || '';
+    const people = md.parsePeopleGroups(text);
+    if (!people.some((p) => p.group === from)) throw new HttpError(409, 'Группа не найдена');
+    if (g !== from && people.some((p) => p.group === g)) throw new HttpError(409, 'Такая группа уже есть');
+    // Заголовок меняем и в исходном тексте, чтобы группа осталась на своём месте
+    const renamed = text.split(/\r?\n/).map((l) => (/^##\s+(.+?)\s*$/.exec(l)?.[1] === from ? `## ${g}` : l)).join('\n');
+    return { files: { [PEOPLE_FILE]: md.formatPeopleGroups(people.map((p) => (p.group === from ? { ...p, group: g } : p)), renamed) }, log: [{ project: 'Исполнители', text: `группа переименована: ${from} → ${g}`, kind: 'группа исполнителя', from, to: g }] };
+  },
+
   async personDelete({ name }) {
     const text = (await readRel(PEOPLE_FILE)) || '';
-    const people = md.parsePeople(text);
+    const people = md.parsePeopleGroups(text);
     const places = [];
     for (const file of await listProjectFiles()) {
       const p = md.parseProject((await readRel(file)) || '', file);
       for (const t of p.tasks) if (t.assignee === name) places.push(`${p.title}: ${t.title}`);
     }
     if (places.length) throw new HttpError(409, `Нельзя удалить: ${name} назначен(а) на задачи`, { places });
-    return { files: { [PEOPLE_FILE]: md.formatPeople(people.filter((p) => p !== name), text) }, log: [{ project: 'Исполнители', text: `удалён: ${name}`, kind: 'исполнители', from: name }] };
+    return { files: { [PEOPLE_FILE]: md.formatPeopleGroups(people.filter((p) => p.name !== name), text) }, log: [{ project: 'Исполнители', text: `удалён: ${name}`, kind: 'исполнители', from: name }] };
   },
 
   async tagAdd({ name, color }) {
@@ -492,7 +528,7 @@ let queue = Promise.resolve();
 const serial = (fn) => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
 
 // ---------- HTTP ----------
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 function send(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
