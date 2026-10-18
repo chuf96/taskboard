@@ -130,9 +130,10 @@ function tagColor(name) {
   for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
   return TAG_COLOR_NAMES[h % TAG_COLOR_NAMES.length];
 }
-// Тэг рисуется цветной обводкой: цвет текста и рамки берётся из выбранного цвета тэга
+// Тэг рисуется пастельной заливкой, как в Notion: фон и текст берутся из выбранного цвета тэга
 function tagStyle(name) {
-  return `color:${TAG_COLORS[tagColor(name)][1]}`;
+  const [bg, fg] = TAG_COLORS[tagColor(name)];
+  return `background:${bg};color:${fg}`;
 }
 // Ряд образцов цвета; onPick получает название цвета
 function swatches(selected, onPick) {
@@ -144,7 +145,9 @@ function swatches(selected, onPick) {
   });
   return el;
 }
-const personHtml = (name) => `<span class="person"><span class="nm">${esc(name)}</span></span>`;
+// Исполнитель: кружок с первой буквой имени и имя
+const avatar = (name) => `<span class="av" aria-hidden="true">${esc([...name.trim()][0]?.toUpperCase() || '?')}</span>`;
+const personHtml = (name) => `<span class="person">${avatar(name)}<span class="nm">${esc(name)}</span></span>`;
 const tagChip = (name) => `<span class="tag" style="${tagStyle(name)}" title="${esc(name)}">${esc(name)}</span>`;
 
 const shownStatus = (t) => (t.errors.length ? 'error' : t.status);
@@ -553,7 +556,7 @@ function renderRow(p, t, group) {
     <button class="ed st" data-f="status" title="Сменить статус"><span class="dot ${STATUS_DOT[st]}"></span><span class="st-label">${STATUS_LABEL[st]}</span></button>
     <span class="cell-title"><button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button></span>
     <span class="cell-tag">${t.tag ? `<button class="ed tagpill" data-f="tag" style="${tagStyle(t.tag)}" title="${esc(t.tag)}">${esc(t.tag)}</button>` : '<button class="ed blank" data-f="tag">+ тэг</button>'}</span>
-    <span class="cell-who"><button class="ed who${t.assignee ? '' : ' blank'}" data-f="assignee" title="${esc(t.assignee || 'Выбрать исполнителя')}">${esc(t.assignee || '+ исполнитель')}</button></span>
+    <span class="cell-who"><button class="ed who${t.assignee ? '' : ' blank'}" data-f="assignee" title="${esc(t.assignee || 'Выбрать исполнителя')}">${t.assignee ? `${avatar(t.assignee)}<span class="nm">${esc(t.assignee)}</span>` : '+ исполнитель'}</button></span>
     <span class="cell-due">${dueCell(t)}</span>
     <button class="open-btn" title="Открыть задачу: даты, комментарий, удаление">${ICON.open}</button>
   </div>`);
@@ -616,7 +619,7 @@ function assigneeMenu(anchor, current, onPick, group) {
   const all = state.board.peopleGroups || state.board.people.map((name) => ({ name, group: '' }));
   const groups = [...new Set(all.map((p) => p.group))];
   const none = { html: '<span class="faint">Без исполнителя</span>', active: !current, action: () => onPick('') };
-  const person = (p) => ({ html: `<span class="grow">${esc(p.name)}</span>`, active: current === p.name, action: () => onPick(p.name) });
+  const person = (p) => ({ html: `${avatar(p.name)}<span class="grow">${esc(p.name)}</span>`, active: current === p.name, action: () => onPick(p.name) });
   if (!all.length) return showMenu(anchor, [none, { label: 'Справочник пуст — добавьте в меню ☰ → «Исполнители»', disabled: true, action: () => {} }]);
   if (groups.length === 1 && groups[0] === '') return showMenu(anchor, [...all.map(person), '-', none]);
   if (group === undefined) {
