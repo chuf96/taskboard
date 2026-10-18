@@ -311,6 +311,57 @@ function toggleCollapsed(key) {
   renderBoard();
 }
 
+// Ширина колонок: название тянется на всю свободную ширину, остальные можно менять мышью.
+// Ширины хранятся в браузере, одни на все доски.
+const COLS = [
+  { key: 'st', label: 'Статус', def: 112, min: 70 },
+  { key: 'title', label: 'Задача' },
+  { key: 'tag', label: 'Тэг', def: 132, min: 60 },
+  { key: 'who', label: 'Исполнитель', def: 150, min: 70 },
+  { key: 'due', label: 'Срок', def: 104, min: 60 },
+];
+const COLS_KEY = 'taskboard.cols';
+function loadCols() {
+  try { return JSON.parse(localStorage.getItem(COLS_KEY) || '{}') || {}; } catch { return {}; }
+}
+function saveCols(w) {
+  try { Object.keys(w).length ? localStorage.setItem(COLS_KEY, JSON.stringify(w)) : localStorage.removeItem(COLS_KEY); } catch {}
+}
+function applyCols(list, w = loadCols()) {
+  for (const c of COLS) if (c.def) list.style.setProperty(`--c-${c.key}`, `${w[c.key] || c.def}px`);
+}
+
+function renderColHead(list) {
+  const head = h(`<div class="colhead"><span></span>${COLS.map((c) => `<span data-col="${c.key}"><span class="lbl">${c.label}</span>${c.def ? '<i class="grip" title="Потяните, чтобы изменить ширину. Двойной щелчок — по умолчанию"></i>' : ''}</span>`).join('')}<span></span></div>`);
+  for (const grip of head.querySelectorAll('.grip')) {
+    const col = COLS.find((c) => c.key === grip.parentElement.dataset.col);
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const w = loadCols();
+      const startX = e.clientX, startW = grip.parentElement.getBoundingClientRect().width;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add('active');
+      document.body.classList.add('col-resizing');
+      const move = (ev) => {
+        w[col.key] = Math.round(Math.max(col.min, Math.min(600, startW + ev.clientX - startX)));
+        applyCols(list, w);
+      };
+      const up = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.classList.remove('active');
+        document.body.classList.remove('col-resizing');
+        if (w[col.key] === col.def) delete w[col.key];
+        saveCols(w);
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up, { once: true });
+      grip.addEventListener('pointercancel', up, { once: true });
+    });
+    grip.addEventListener('dblclick', () => { const w = loadCols(); delete w[col.key]; saveCols(w); applyCols(list, w); });
+  }
+  return head;
+}
+
 function renderBoard() {
   const b = state.board;
   if (!state.collapsed || state.collapsedFor !== b.folder) { loadCollapsed(); state.collapsedFor = b.folder; }
@@ -341,6 +392,7 @@ function renderBoard() {
     { label: 'Исполнители', action: showPeople },
     { label: 'Тэги', action: showTags },
     { label: 'Настройки', action: showSettings },
+    ...(Object.keys(loadCols()).length ? [{ label: 'Ширина колонок по умолчанию', action: () => { saveCols({}); renderBoard(); } }] : []),
     '-',
     { html: `<span class="menu-version">Версия ${esc((b.version || '').replace(/\.0$/, ''))}</span>`, disabled: true, action: () => {} },
   ]));
@@ -352,6 +404,8 @@ function renderBoard() {
     list.append(h(`<div class="empty"><h2>Проектов пока нет</h2><p>Каждый проект — это .md-файл в папке.</p><button class="btn primary">Создать проект</button></div>`));
     list.querySelector('button').addEventListener('click', addProject);
   } else {
+    applyCols(list);
+    list.append(renderColHead(list));
     list.append(renderFocus());
     const filter = state.waitFilter;
     const shown = filter ? b.projects.filter((p) => p.tasks.some((t) => isWaitingFor(t, filter))) : b.projects;

@@ -79,7 +79,26 @@ button { cursor: pointer; background: none; border: 0; padding: 0; text-align: l
 
 /* ---------- список ---------- */
 .board { height: calc(100vh - 54px); overflow-y: auto; }
-.list { padding: 4px 20px 80px; max-width: 1400px; }
+.list {
+  padding: 0 20px 80px;
+  --c-st: 112px; --c-tag: 132px; --c-who: 150px; --c-due: 104px;
+  --cols: 22px var(--c-st) minmax(0, 1fr) var(--c-tag) var(--c-who) var(--c-due) 26px;
+}
+
+/* Шапка колонок: подписи и ручки для изменения ширины */
+.colhead {
+  position: sticky; top: 0; z-index: 3; background: var(--paper);
+  display: grid; grid-template-columns: var(--cols); column-gap: 14px; align-items: center;
+  height: 30px; padding: 0 8px; border-bottom: 1px solid var(--line);
+  color: var(--faint); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; user-select: none;
+}
+.colhead > span { position: relative; min-width: 0; height: 100%; display: flex; align-items: center; }
+.colhead .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.colhead .grip { position: absolute; top: 0; bottom: 0; right: -14px; width: 14px; cursor: col-resize; z-index: 1; touch-action: none; }
+.colhead .grip::after { content: ""; position: absolute; left: 6px; top: 7px; bottom: 7px; width: 2px; border-radius: 1px; background: var(--line); transition: background .12s; }
+.colhead:hover .grip::after { background: var(--faint); }
+.colhead .grip:hover::after, .colhead .grip.active::after { background: var(--accent); }
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
 .group { position: relative; }
 .group.dragging { opacity: .4; }
 .group.drag-over::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
@@ -101,7 +120,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; text-align: l
 
 /* Строка задачи: звезда · статус · название · тэг · исполнитель · срок · открыть */
 .trow {
-  display: grid; grid-template-columns: 22px 112px minmax(0, 1fr) 132px 150px 104px 26px;
+  display: grid; grid-template-columns: var(--cols);
   column-gap: 14px; align-items: center; height: var(--row); padding: 0 8px;
   border-bottom: 1px solid var(--line); cursor: pointer;
 }
