@@ -27,6 +27,8 @@ const state = {
   ppanel: null,              // { file, id } — открытая карточка контрольной точки
   view: (() => { try { return localStorage.getItem('taskboard.view') === 'roadmap' ? 'roadmap' : 'tasks'; } catch { return 'tasks'; } })(),
   rmScale: (() => { try { return ['q', 'h', 'y'].includes(localStorage.getItem('taskboard.rmScale')) ? localStorage.getItem('taskboard.rmScale') : 'q'; } catch { return 'q'; } })(),
+  rmZoom: (() => { try { const z = Number(localStorage.getItem('taskboard.rmZoom')); return z > 0 ? z : 1; } catch { return 1; } })(),
+  rmNames: (() => { try { return localStorage.getItem('taskboard.rmNames') === '1'; } catch { return false; } })(),
   rmLink: null,              // выбранная связь «a>b»
   rmScroll: null,            // { left, top } — где была карта до перерисовки
   undo: [], redo: [],
@@ -391,6 +393,7 @@ function renderBoard() {
       <span class="ratio" title="Закрыто сегодня / создано сегодня${c.created ? '' : ' — сегодня ещё ничего не создано'}">${ratio}</span>
     </div>
     ${isMap ? `<span class="seg rm-scale">${Object.entries(RM_SCALES).map(([k, v]) => `<button data-s="${k}" class="${state.rmScale === k ? 'on' : ''}">${v.label}</button>`).join('')}</span>
+      <span class="zoom"><button class="icon-btn" data-z="-1" title="Мельче: на экране больше дней">−</button><button class="icon-btn" data-z="1" title="Крупнее: на экране меньше дней">+</button></span>
       <button class="btn rm-today" title="Прокрутить к сегодняшнему дню">Сегодня</button>` : ''}
     <span class="spacer"></span>
     ${!isMap && state.waitFilter ? `<button class="filter-chip" title="Сбросить фильтр (Esc)">Ожидания: ${esc(state.waitFilter)} <span>✕</span></button>` : ''}
@@ -410,7 +413,12 @@ function renderBoard() {
     { label: 'Настройки', action: showSettings },
     ...(!isMap && Object.keys(loadCols()).length ? [{ label: 'Ширина колонок по умолчанию', action: () => { saveCols({}); renderBoard(); } }] : []),
     '-',
-    { html: `<span class="menu-two"><span>Скачать PDF</span><small>${isMap ? `дорожная карта, масштаб «${RM_SCALES[state.rmScale].label}»` : 'есть на вкладке RoadMap'}</small></span>`, action: () => (isMap ? exportPdf() : toast('PDF скачивается с вкладки RoadMap: откройте её внизу')) },
+    ...(isMap ? [{ html: `<span class="menu-check${state.rmNames ? ' on' : ''}"></span><span class="grow">Отображать имена</span>`, action: () => {
+      state.rmNames = !state.rmNames;
+      try { localStorage.setItem('taskboard.rmNames', state.rmNames ? '1' : '0'); } catch {}
+      renderBoard();
+    } }] : []),
+    { html: `<span class="menu-two"><span>Скачать PDF</span><small>${isMap ? 'дорожная карта: даты, которые видны на экране' : 'есть на вкладке RoadMap'}</small></span>`, action: () => (isMap ? exportPdf() : toast('PDF скачивается с вкладки RoadMap: откройте её внизу')) },
     '-',
     { html: `<span class="menu-version">Версия ${esc((b.version || '').replace(/\.0$/, ''))}</span>`, disabled: true, action: () => {} },
   ]));
@@ -418,8 +426,21 @@ function renderBoard() {
     top.querySelector('.rm-scale').addEventListener('click', (e) => {
       const s = e.target.closest('[data-s]')?.dataset.s;
       if (!s || s === state.rmScale) return;
-      state.rmScale = s; state.rmScroll = null; state.rmResetScroll = true;
-      try { localStorage.setItem('taskboard.rmScale', s); } catch {}
+      state.rmScale = s; state.rmZoom = 1; state.rmScroll = null; state.rmResetScroll = true;
+      try { localStorage.setItem('taskboard.rmScale', s); localStorage.setItem('taskboard.rmZoom', '1'); } catch {}
+      renderBoard();
+    });
+    // «+» и «−» меняют ширину дня; день в середине экрана остаётся на месте
+    top.querySelector('.zoom').addEventListener('click', (e) => {
+      const z = Number(e.target.closest('[data-z]')?.dataset.z);
+      const el = $app.querySelector('.rm'), L = state.rmGeo;
+      if (!z || !el || !L) return;
+      const base = L.dw / state.rmZoom;
+      const next = Math.min(80 / base, Math.max(1.5 / base, state.rmZoom * (z > 0 ? 1.25 : 0.8)));
+      if (Math.abs(next - state.rmZoom) < 1e-6) return toast(z > 0 ? 'Это самый крупный масштаб' : 'Это самый мелкий масштаб');
+      state.rmCenter = (el.scrollLeft + (el.clientWidth - RM.LEFT) / 2) / L.dw;
+      state.rmZoom = next;
+      try { localStorage.setItem('taskboard.rmZoom', String(next)); } catch {}
       renderBoard();
     });
     top.querySelector('.rm-today').addEventListener('click', () => rmScrollToDay(b.today, true));
@@ -1327,7 +1348,7 @@ function relocatePanel(quiet) {
 // ---------- дорожная карта ----------
 // Дорожки — проекты с разделом «## RoadMap», точки — строки этого раздела. Всё рисуется заново из доски.
 const RM = { LEFT: 210, LANE_H: 38, ROW: 40, HEAD: 70 };
-const RM_SCALES = { q: { months: 3, min: 18, label: 'Квартал' }, h: { months: 6, min: 7, label: 'Полгода' }, y: { months: 12, min: 3, label: 'Год' } };
+const RM_SCALES = { q: { months: 3, min: 12, label: 'Квартал' }, h: { months: 6, min: 7, label: 'Полгода' }, y: { months: 12, min: 3, label: 'Год' } };
 const HEALTH = {
   g: { label: 'По плану', c: '#4dab9a', bg: '#dbeee8' },
   y: { label: 'Есть риски', c: '#e5a24e', bg: '#fbecd6' },
@@ -1386,7 +1407,7 @@ function rmLayout(viewW, scale = state.rmScale) {
   const n = Math.round((end - start) / dayMs);
   const qd = new Date(quarter);
   const visible = Math.round((Date.UTC(qd.getUTCFullYear(), qd.getUTCMonth() + sc.months, 1) - quarter) / dayMs);
-  const dw = Math.max(sc.min, (viewW - RM.LEFT - 12) / visible);
+  const dw = Math.min(80, Math.max(1.5, Math.max(sc.min, (viewW - RM.LEFT - 12) / visible) * (state.rmZoom || 1)));
   const X = (iso) => ((toUTC(iso) - start) / dayMs) * dw + dw / 2;
   const all = allPoints().filter((x) => validDate(shownDate(x)));
   const lanes = [];
@@ -1464,7 +1485,7 @@ function renderRoadmap() {
       bg += `<div class="bg rel" style="left:${x}px;width:${Math.max(L.dw, 4)}px"></div>`;
       head += `<div class="rel" data-day="${iso}" style="left:${x + L.dw / 2}px" title="Плановый релиз ${esc(rel[iso])}, ${ruDate(iso)}. Щелчок: изменить или снять">${esc(rel[iso])}</div>`;
     }
-    head += `<div class="cell d${we ? ' we' : ''}${iso === b.today ? ' today' : ''}" data-day="${iso}" style="left:${x}px;width:${L.dw}px" title="${ruDate(iso)}. Щелчок отмечает плановый релиз">${L.dw >= 18 ? d.getUTCDate() : ''}</div>`;
+    head += `<div class="cell d${we ? ' we' : ''}${iso === b.today ? ' today' : ''}" data-day="${iso}" style="left:${x}px;width:${L.dw}px${L.dw < 18 ? ';font-size:9.5px;letter-spacing:-.3px' : ''}" title="${ruDate(iso)}. Щелчок отмечает плановый релиз">${L.dw >= 12 ? d.getUTCDate() : ''}</div>`;
   }
   const tms = toUTC(b.today);
   if (tms >= L.start && tms < L.end) bg += `<div class="bg today" style="left:${L.X(b.today) - 1}px"></div>`;
@@ -1496,7 +1517,7 @@ function renderRoadmap() {
   if (!L.lanes.length) seps += `<div class="lane-hint big" style="top:16px;left:${Math.max(12, L.X(b.today) + 14)}px">${b.projects.length ? 'Добавьте проект на карту кнопкой «+ Проект» слева или создайте точку кнопкой (+) вверху' : 'Сначала создайте проект на вкладке Tasks'}</div>`;
   const BH = Math.max(L.height + 36, document.documentElement.clientHeight - 54 - 36 - RM.HEAD - 2);
 
-  const wrap = h(`<main class="rm"><div class="rm-inner" style="width:${RM.LEFT + L.W}px">
+  const wrap = h(`<main class="rm${state.rmNames ? ' names' : ''}"><div class="rm-inner" style="width:${RM.LEFT + L.W}px">
     <div class="rm-head"><div class="corner" style="width:${RM.LEFT}px;height:${RM.HEAD}px">Проекты</div><div class="hc" style="width:${L.W}px;height:${RM.HEAD}px">${head}</div></div>
     <div class="rm-body"><div class="labels" style="width:${RM.LEFT}px;min-height:${BH}px">${lanesL}</div>
       <div class="canvas" style="width:${L.W}px;height:${BH}px">${bg}${seps}<svg class="ov" width="${L.W}" height="${BH}">${rmOverlay(L)}</svg>${pts}</div></div>
@@ -1518,7 +1539,8 @@ function rmAfterMount() {
     }
   }
   if (state.rmScroll) { el.scrollLeft = state.rmScroll.left; el.scrollTop = state.rmScroll.top; }
-  else el.scrollLeft = Math.max(0, L.X(isoOf(L.quarter)) - L.dw / 2);
+  if (state.rmCenter != null) { el.scrollLeft = Math.max(0, state.rmCenter * L.dw - (el.clientWidth - RM.LEFT) / 2); state.rmCenter = null; }
+  else if (!state.rmScroll) el.scrollLeft = Math.max(0, L.X(isoOf(L.quarter)) - L.dw / 2);
 }
 function rmScrollToDay(iso, smooth) {
   const el = $app.querySelector('.rm'), L = state.rmGeo;
@@ -1952,7 +1974,7 @@ async function rmFontCss() {
   return fontCss;
 }
 
-function rmPdfSvg(L, W, H, TOP, fonts) {
+function rmPdfSvg(L, W, H, TOP, fonts, i0, i1) {
   const b = state.board;
   const rel = Object.fromEntries((b.releases || []).map((r) => [r.date, r.name]));
   const ctx = document.createElement('canvas').getContext('2d');
@@ -1960,11 +1982,11 @@ function rmPdfSvg(L, W, H, TOP, fonts) {
   const T = (x, y, txt, a = '') => `<text x="${x}" y="${y}" ${a}>${esc(txt)}</text>`;
   const BH = H - TOP - RM.HEAD;
   let head = '', bg = '';
-  for (let i = 0; i < L.n; i++) {
+  for (let i = i0; i < i1; i++) {
     const ms = L.start + i * dayMs, d = new Date(ms), iso = isoOf(ms), x = i * L.dw;
     const dow = d.getUTCDay(), we = dow === 0 || dow === 6;
-    if (d.getUTCDate() === 1 || i === 0) {
-      head += `<line x1="${x}" y1="0" x2="${x}" y2="46" stroke="${RM_C.line}"/>` + T(x + 6, 17, `${MON_FULL[d.getUTCMonth()]}${d.getUTCMonth() === 0 || i === 0 ? ' ' + d.getUTCFullYear() : ''}`, `font-size="12.5" font-weight="600" fill="${RM_C.ink}"`);
+    if (d.getUTCDate() === 1 || i === i0) {
+      head += `<line x1="${x}" y1="0" x2="${x}" y2="46" stroke="${RM_C.line}"/>` + T(x + 6, 17, `${MON_FULL[d.getUTCMonth()]}${d.getUTCMonth() === 0 || i === i0 ? ' ' + d.getUTCFullYear() : ''}`, `font-size="12.5" font-weight="600" fill="${RM_C.ink}"`);
       bg += `<line x1="${x}" y1="0" x2="${x}" y2="${BH}" stroke="${RM_C.line}"/>`;
     }
     if (dow === 1) {
@@ -1976,7 +1998,7 @@ function rmPdfSvg(L, W, H, TOP, fonts) {
     if (we && L.dw >= 6) bg += `<rect x="${x}" y="0" width="${L.dw}" height="${BH}" fill="${RM_C.weekend}"/>`;
     if (rel[iso]) bg += `<rect x="${x}" y="0" width="${Math.max(L.dw, 4)}" height="${BH}" fill="${RM_C.rel}"/>`;
     if (iso === b.today) head += `<rect x="${x + 1}" y="47" width="${Math.max(L.dw - 2, 2)}" height="22" rx="4" fill="${RM_C.accent}"/>`;
-    if (L.dw >= 18) head += T(x + L.dw / 2, 62, String(d.getUTCDate()), `font-size="11" text-anchor="middle" fill="${iso === b.today ? '#fff' : we ? RM_C.weFaint : RM_C.faint}"${iso === b.today ? ' font-weight="600"' : ''}`);
+    if (L.dw >= 12) head += T(x + L.dw / 2, 62, String(d.getUTCDate()), `font-size="${L.dw >= 18 ? 11 : 9.5}" text-anchor="middle" fill="${iso === b.today ? '#fff' : we ? RM_C.weFaint : RM_C.faint}"${iso === b.today ? ' font-weight="600"' : ''}`);
     if (rel[iso]) {
       const w = measure(rel[iso], '600 11px') + 10, cx = x + L.dw / 2;
       head += `<rect x="${cx - w / 2}" y="47" width="${w}" height="22" rx="5" fill="${RM_C.relInk}"/>` + T(cx, 62, rel[iso], 'font-size="11" font-weight="600" text-anchor="middle" fill="#fff"');
@@ -1991,7 +2013,8 @@ function rmPdfSvg(L, W, H, TOP, fonts) {
     if (p.coll) continue;
     let lx = Math.max(x, shiftOf(p) ? L.X(p.orig) : x) + 24;
     const chipW = p.pre ? measure(p.pre, '600 11.5px') + 19 : 0;
-    const fullW = chipW + measure(p.title, '500 13px') + (p.ind ? 20 : 0);
+    const nameW = state.rmNames && p.owner ? measure(p.owner, '400 12.5px') + 32 : 0;
+    const fullW = chipW + measure(p.title, '500 13px') + (p.ind ? 20 : 0) + nameW;
     pts += `<rect x="${lx - 4}" y="${p.y - 12}" width="${fullW + 8}" height="24" rx="4" fill="#fff" fill-opacity=".82"/>`;
     if (p.pre) {
       const [cbg, cfg] = prefixColors(p.pre);
@@ -2000,7 +2023,9 @@ function rmPdfSvg(L, W, H, TOP, fonts) {
       lx += w + 7;
     }
     pts += T(lx, p.y + 4.5, p.title, `font-size="13" font-weight="500" fill="${p.closed ? RM_C.faint : RM_C.ink}"${p.closed ? ' text-decoration="line-through"' : ''}`);
-    if (p.ind) pts += T(lx + measure(p.title, '500 13px') + 7, p.y + 4.5, '≈', `font-size="12" fill="${RM_C.muted}"`);
+    lx += measure(p.title, '500 13px') + 7;
+    if (p.ind) { pts += T(lx, p.y + 4.5, '≈', `font-size="12" fill="${RM_C.muted}"`); lx += 20; }
+    if (nameW) pts += `<circle cx="${lx + 9}" cy="${p.y}" r="9" fill="#efe9e3"/>` + T(lx + 9, p.y + 3.5, [...p.owner][0].toUpperCase(), 'font-size="10" font-weight="600" text-anchor="middle" fill="#64473a"') + T(lx + 23, p.y + 4.5, p.owner, `font-size="12.5" fill="${RM_C.muted}"`);
   }
   for (const l of L.lanes) {
     const w = Math.min(measure(l.p.title, '600 14px'), RM.LEFT - 60);
@@ -2011,10 +2036,11 @@ function rmPdfSvg(L, W, H, TOP, fonts) {
 <style>${fonts} text{font-family:"InterPdf",sans-serif}</style>
 <rect width="${W}" height="${H}" fill="#fff"/>
 ${T(16, 30, `RoadMap · ${b.name}`, `font-size="18" font-weight="700" fill="${RM_C.ink}"`)}
-${T(W - 16, 30, `${ruDate(b.today)} · ${RM_SCALES[state.rmScale].label}`, `font-size="13" text-anchor="end" fill="${RM_C.muted}"`)}
-<g transform="translate(${RM.LEFT},${TOP + RM.HEAD})">${bg}${rmOverlay(L, true)}${pts}</g>
+${T(W - 16, 30, `${ruDate(isoOf(L.start + i0 * dayMs))} – ${ruDate(isoOf(L.start + (i1 - 1) * dayMs))}`, `font-size="13" text-anchor="end" fill="${RM_C.muted}"`)}
+<defs><clipPath id="cb"><rect x="0" y="0" width="${(i1 - i0) * L.dw}" height="${BH}"/></clipPath><clipPath id="ch"><rect x="0" y="0" width="${(i1 - i0) * L.dw}" height="${RM.HEAD}"/></clipPath></defs>
+<g transform="translate(${RM.LEFT},${TOP + RM.HEAD})"><g clip-path="url(#cb)"><g transform="translate(${-i0 * L.dw},0)">${bg}${rmOverlay(L, true)}${pts}</g></g></g>
 <g transform="translate(0,${TOP + RM.HEAD})"><rect x="0" y="0" width="${RM.LEFT}" height="${BH}" fill="#fff"/>${lanes}<line x1="${RM.LEFT - 0.5}" y1="0" x2="${RM.LEFT - 0.5}" y2="${BH}" stroke="${RM_C.line}"/></g>
-<g transform="translate(0,${TOP})"><rect x="0" y="0" width="${W}" height="${RM.HEAD}" fill="#fff"/><g transform="translate(${RM.LEFT},0)">${head}</g>
+<g transform="translate(0,${TOP})"><rect x="0" y="0" width="${W}" height="${RM.HEAD}" fill="#fff"/><g transform="translate(${RM.LEFT},0)"><g clip-path="url(#ch)"><g transform="translate(${-i0 * L.dw},0)">${head}</g></g></g>
 ${T(16, 64, 'Проекты', `font-size="12" fill="${RM_C.faint}"`)}<line x1="0" y1="${RM.HEAD - 0.5}" x2="${W}" y2="${RM.HEAD - 0.5}" stroke="${RM_C.line}"/><line x1="${RM.LEFT - 0.5}" y1="0" x2="${RM.LEFT - 0.5}" y2="${RM.HEAD}" stroke="${RM_C.line}"/></g>
 </svg>`;
 }
@@ -2046,10 +2072,15 @@ async function exportPdf() {
   toast('Готовлю PDF…');
   try {
     await document.fonts.ready;
-    const L = rmLayout(document.documentElement.clientWidth);
+    // В PDF попадают те даты, которые сейчас видны на экране, в текущем масштабе
+    const el = $app.querySelector('.rm'), L = state.rmGeo;
+    if (!el || !L) return;
+    const i0 = Math.max(0, Math.round(el.scrollLeft / L.dw));
+    const viewPx = Math.min(el.clientWidth, document.documentElement.clientWidth - 12) - RM.LEFT; // как в rmLayout
+    const i1 = Math.min(L.n, i0 + Math.max(1, Math.round(viewPx / L.dw)));
     const TOP = 48;
-    const W = Math.ceil(RM.LEFT + L.W), H = Math.ceil(TOP + RM.HEAD + Math.max(L.height + 24, 80));
-    const svg = rmPdfSvg(L, W, H, TOP, await rmFontCss());
+    const W = Math.ceil(RM.LEFT + (i1 - i0) * L.dw), H = Math.ceil(TOP + RM.HEAD + Math.max(L.height + 24, 80));
+    const svg = rmPdfSvg(L, W, H, TOP, await rmFontCss(), i0, i1);
     const img = new Image();
     img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     await img.decode();
@@ -2064,7 +2095,7 @@ async function exportPdf() {
     const pdf = makePdf(new Uint8Array(await jpeg.arrayBuffer()), cv.width, cv.height, W, H);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(pdf);
-    a.download = `RoadMap ${ruDate(b.today)} ${RM_SCALES[state.rmScale].label}.pdf`;
+    a.download = `RoadMap ${ruDate(isoOf(L.start + i0 * dayMs))}-${ruDate(isoOf(L.start + (i1 - 1) * dayMs))}.pdf`;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   } catch (e) { toast('Не удалось собрать PDF: ' + e.message, true); }
