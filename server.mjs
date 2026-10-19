@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import * as md from './lib/md.mjs';
 import * as log from './lib/log.mjs';
+import * as rm from './lib/roadmap.mjs';
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
@@ -21,6 +22,8 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), '
 const PEOPLE_FILE = '_исполнители.md';
 const TAGS_FILE = '_тэги.md';
 const STATS_FILE = '_статистика.md';
+const RELEASES_FILE = '_релизы.md';
+const PREFIXES_FILE = '_префиксы.md';
 const ORDER_FILE = '_board.json';
 const ARCHIVE_TASKS = path.join('архив', 'задачи');
 const ARCHIVE_PROJECTS = path.join('архив', 'проекты');
@@ -135,6 +138,9 @@ async function readPeople() { return md.parsePeople((await readRel(PEOPLE_FILE))
 async function readPeopleGroups() { return md.parsePeopleGroups((await readRel(PEOPLE_FILE)) || ''); }
 async function readTagList() { return md.parseTags((await readRel(TAGS_FILE)) || ''); }
 async function readTags() { return (await readTagList()).map((t) => t.name); }
+async function readReleases() { return rm.parseReleases((await readRel(RELEASES_FILE)) || ''); }
+// Пока файла префиксов нет, действуют префиксы по умолчанию; файл появится при первой правке справочника
+async function readPrefixes() { const t = await readRel(PREFIXES_FILE); return t === null ? rm.DEFAULT_PREFIXES.map((p) => ({ ...p })) : rm.parsePrefixes(t); }
 
 // Задачи из архива (архив/задачи и архив/проекты) — для счётчиков «Создано/Закрыто»
 async function readArchivedTasks() {
@@ -189,17 +195,23 @@ async function getBoard() {
   for (const file of files) {
     const text = (await readRel(file)) ?? '';
     const p = md.parseProject(text, file);
+    const r = rm.parseRoadmap(text);
+    const byTask = new Map(r.points.filter((x) => x.task).map((x) => [x.task, x.id]));
     projects.push({
-      file, title: p.title,
+      file, title: p.title, roadmap: r.has,
+      points: r.points.map((x) => ({
+        id: x.id, title: x.title, pre: x.pre, owner: x.owner, start: x.start, plan: x.plan, orig: x.orig, ind: x.ind,
+        health: x.health, shifts: x.shifts, closed: x.closed, task: x.task, after: x.after, desc: x.desc, errors: rm.validatePoint(x, people),
+      })),
       tasks: p.tasks.map((t) => ({
-        line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char,
+        line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char, due: t.due, point: (t.id && byTask.get(t.id)) || '',
         assignee: t.assignee, tag: t.tag, focus: t.focus, id: t.id, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, cancelled: t.cancelled, result: t.result,
         description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays),
       })),
     });
   }
   const counters = md.dayCounters(projects.flatMap((p) => p.tasks), await readArchivedTasks(), now);
-  return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION };
+  return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION, releases: await readReleases(), prefixes: await readPrefixes() };
 }
 
 // ---------- операции ----------
@@ -238,29 +250,169 @@ async function archiveTaskFile(file) {
   return { rel, text };
 }
 
+// ---------- дорожная карта: помощники ----------
+// Правки нескольких файлов в рамках одной операции: читаем один раз, пишем всё вместе
+function workspace() {
+  const cache = new Map();
+  const dirty = new Set();
+  return {
+    async get(rel) { if (!cache.has(rel)) cache.set(rel, await readRel(rel)); return cache.get(rel); },
+    set(rel, text) { cache.set(rel, text); dirty.add(rel); },
+    files() { return Object.fromEntries([...dirty].map((r) => [r, cache.get(r)])); },
+  };
+}
+async function findPoint(ws, id) {
+  for (const file of await listProjectFiles()) {
+    const p = rm.parseRoadmap((await ws.get(file)) || '').points.find((x) => x.id === id);
+    if (p) return { file, p };
+  }
+  return null;
+}
+async function mustPoint(ws, file, id) {
+  checkProjectFile(file);
+  const text = await ws.get(file);
+  if (text === null) throw new HttpError(409, 'Файл проекта не найден — карта обновлена');
+  const p = rm.parseRoadmap(text).points.find((x) => x.id === id);
+  if (!p) throw new HttpError(409, 'Контрольная точка изменилась в файле — карта обновлена');
+  return p;
+}
+async function pointIdAllocator() {
+  const texts = [];
+  for (const dir of ['', ARCHIVE_TASKS, ARCHIVE_PROJECTS]) {
+    const ents = await fsp.readdir(path.join(folder, dir), { withFileTypes: true }).catch(() => []);
+    for (const e of ents) if (e.isFile() && /\.md$/i.test(e.name)) texts.push((await readRel(path.join(dir, e.name))) ?? '');
+  }
+  // Удалённые точки остаются в журнале: их ID не выдаём снова, чтобы история точки не смешивалась
+  for (const n of await fsp.readdir(path.join(folder, log.LOG_DIR)).catch(() => [])) {
+    if (!/\.md$/i.test(n)) continue;
+    const t = (await readRel(path.join(log.LOG_DIR, n))) ?? '';
+    texts.push([...t.matchAll(/\[id:: (m\d+)\]/g)].map((m) => ` ^${m[1]}`).join('\n'));
+  }
+  return rm.nextPointId(texts);
+}
+// Убирает связи на удалённые точки во всех проектах
+async function dropLinksEverywhere(ws, ids) {
+  if (!ids.length) return;
+  for (const file of await listProjectFiles()) {
+    const t = await ws.get(file);
+    if (t === null) continue;
+    const n = rm.dropLinks(t, ids);
+    if (n !== t) ws.set(file, n);
+  }
+}
+function checkDate(v, label, required = false) {
+  const d = String(v || '').trim();
+  if (!d) { if (required) throw new HttpError(400, `Укажите ${label}`); return ''; }
+  if (!md.isValidDate(d)) throw new HttpError(400, `${label[0].toUpperCase() + label.slice(1)}: неверная дата`);
+  return d;
+}
+async function checkOwner(name) {
+  const n = String(name || '').trim();
+  if (!n) throw new HttpError(400, 'У контрольной точки обязательно есть владелец');
+  if (!(await readPeople()).includes(n)) throw new HttpError(400, `Владельца «${n}» нет в справочнике исполнителей`);
+  return n;
+}
+async function checkPrefix(code) {
+  const c = String(code || '').trim();
+  if (!c) return '';
+  const p = (await readPrefixes()).find((x) => x.code.toLowerCase() === c.toLowerCase());
+  if (!p) throw new HttpError(400, `Префикса «${c}» нет в справочнике`);
+  return p.code;
+}
+
+/**
+ * Применяет правку к точке. Сдвиг — любое изменение реального срока: счётчик сдвигов растёт,
+ * и для него обязательно новое здоровье. Индикативный срок сдвигов не копит; когда галочку снимают,
+ * текущий срок становится первоначальным.
+ */
+function applyPointPatch(p, patch, now = md.today()) {
+  const n = { ...p, after: [...p.after] };
+  if ('title' in patch) { const t = String(patch.title || '').replace(/\s*\n\s*/g, ' ').trim(); if (t) n.title = t.slice(0, 120); }
+  if ('pre' in patch) n.pre = patch.pre || '';
+  if ('desc' in patch) n.desc = String(patch.desc || '');
+  if ('owner' in patch && patch.owner) n.owner = patch.owner;
+  if ('start' in patch) n.start = patch.start || '';
+  if ('health' in patch && rm.HEALTH[patch.health]) n.health = patch.health;
+  if ('ind' in patch) n.ind = !!patch.ind;
+  if ('plan' in patch && patch.plan) n.plan = patch.plan;
+  let shifted = false;
+  if (p.ind && !n.ind) { n.orig = n.plan; n.shifts = 0; }
+  else if (!p.ind && n.ind) { n.orig = ''; n.shifts = 0; }
+  else if (!n.ind && n.plan !== p.plan) { n.shifts = (p.shifts || 0) + 1; if (!n.orig) n.orig = p.plan; shifted = true; }
+  if (shifted && !rm.HEALTH[patch.health]) throw new HttpError(400, 'Срок сдвинут — выберите здоровье контрольной точки');
+  if ('status' in patch) n.closed = patch.status === 'closed' ? (p.closed || patch.closed || now) : '';
+  else if ('closed' in patch && n.closed && patch.closed) n.closed = patch.closed;
+  return n;
+}
+
+// Точка, созданная из задачи, синхронизирована с ней: срок, название, владелец, закрытие
+function syncTaskFromPoint(text, before, after) {
+  if (!after.task) return text;
+  const t = md.parseProject(text, '').tasks.find((x) => x.id === after.task);
+  if (!t) return text;
+  const patch = {};
+  if (after.plan !== before.plan) patch.due = after.plan;
+  if (after.title !== before.title) patch.title = after.title;
+  if (after.owner !== before.owner) patch.assignee = after.owner;
+  if (after.closed && !before.closed && t.status !== 'closed') patch.status = 'closed';
+  if (!Object.keys(patch).length) return text;
+  const n = md.applyPatch(t, patch);
+  if (patch.status === 'closed') n.closed = after.closed;
+  return md.replaceBlock(text, t, md.taskBlock(n));
+}
+
 const ops = {
-  async create({ file, title }) {
+  async create({ file, title, due }) {
     checkProjectFile(file);
     const text = await readRel(file);
     if (text === null) throw new HttpError(409, 'Файл проекта не найден');
-    const t = { bullet: '-', char: ' ', title: checkName(title), created: md.today(), extra: [], id: (await idAllocator())() };
+    const t = { bullet: '-', char: ' ', title: checkName(title), due: checkDate(due, 'срок'), created: md.today(), extra: [], id: (await idAllocator())() };
     const out = md.insertBlock(text, md.taskBlock(t));
     return { files: { [file]: out }, task: { file, line: md.formatTaskLine(t) } };
   },
 
-  async update({ file, ref, patch }) {
+  async update({ file, ref, patch, health }) {
     const { text, t } = await mustTask(file, ref);
+    if (patch && 'due' in patch) patch.due = checkDate(patch.due, 'срок');
     const n = md.applyPatch(await withId(t), patch || {});
     const block = md.taskBlock(n);
-    return { files: { [file]: md.replaceBlock(text, t, block) }, task: { file, line: block[0], lineNo: t.lineNo }, rejected: n.rejected || null };
+    const ws = workspace();
+    let out = md.replaceBlock(text, t, block);
+    // Связанная контрольная точка следует за задачей
+    const pt = n.id && rm.parseRoadmap(out).points.find((x) => x.task === n.id);
+    if (pt && !n.due && t.due && n.status !== 'cancelled') throw new HttpError(400, 'У задачи есть контрольная точка на RoadMap: срок обязателен');
+    if (pt) {
+      if (n.status === 'cancelled' && t.status !== 'cancelled') {
+        out = rm.replacePoint(out, pt.id, null);
+        ws.set(file, out);
+        await dropLinksEverywhere(ws, [pt.id]);
+        out = await ws.get(file);
+      } else {
+        const pp = {};
+        if (n.title !== t.title) pp.title = n.title;
+        if (n.assignee && n.assignee !== t.assignee) pp.owner = n.assignee;
+        if (n.due && n.due !== t.due) pp.plan = n.due;
+        if (n.status === 'closed' && t.status !== 'closed') { pp.status = 'closed'; pp.closed = n.closed; }
+        if (t.status === 'closed' && n.status !== 'closed') pp.status = 'open';
+        if (health) pp.health = health;
+        if (Object.keys(pp).length) out = rm.replacePoint(out, pt.id, rm.pointBlock(applyPointPatch(pt, pp)));
+      }
+    }
+    ws.set(file, out);
+    const line = md.parseProject(out, file).tasks.find((x) => x.id === n.id)?.line || block[0];
+    return { files: ws.files(), task: { file, line, lineNo: t.lineNo }, rejected: n.rejected || null };
   },
 
   async delete({ file, ref }) {
     const { text, t } = await mustTask(file, ref);
-    const { text: out } = md.removeBlock(text, t);
+    let { text: out } = md.removeBlock(text, t);
     const arch = await archiveTaskFile(file);
     const tid = await withId(t);
     const block = md.taskBlock({ ...tid, deleted: md.today() });
+    // Контрольная точка задачи удаляется вместе с ней, связи с точкой тоже
+    const ws = workspace();
+    const pt = t.id && rm.parseRoadmap(out).points.find((x) => x.task === t.id);
+    if (pt) { ws.set(file, rm.replacePoint(out, pt.id, null)); await dropLinksEverywhere(ws, [pt.id]); out = await ws.get(file); }
     return { files: { [file]: out, [arch.rel]: md.appendBlock(arch.text, block) }, log: [{ project: projTitle(file, text), task: t.title, id: tid.id, text: 'удалена (перенесена в архив)', kind: 'удаление' }] };
   },
 
@@ -278,8 +430,12 @@ const ops = {
     const target = await readRel(toFile);
     if (target === null) throw new HttpError(409, 'Файл проекта не найден');
     const before = beforeRef ? md.findTask(target, beforeRef) : null;
-    const { text: removed } = md.removeBlock(text, t);
-    return { files: { [file]: removed, [toFile]: md.insertBlock(target, block, before) }, task: { file: toFile, line: block[0] } };
+    let { text: removed } = md.removeBlock(text, t);
+    let into = md.insertBlock(target, block, before);
+    // Контрольная точка задачи переезжает в новый проект вместе с задачей
+    const pt = t.id && rm.parseRoadmap(removed).points.find((x) => x.task === t.id);
+    if (pt) { removed = rm.replacePoint(removed, pt.id, null); into = rm.addPoint(into, rm.pointBlock(pt)); }
+    return { files: { [file]: removed, [toFile]: into }, task: { file: toFile, line: block[0] } };
   },
 
   async archiveClosed({ file }) {
@@ -369,6 +525,13 @@ const ops = {
       for (const x of tasks.reverse()) t = md.replaceBlock(t, { ...x, endNo: x.lineNo + 1 }, [md.formatTaskLine({ ...x, assignee: n })]);
       files[file] = t;
     }
+    for (const file of await listProjectFiles()) {
+      let t = files[file] ?? (await readRel(file));
+      const pts = rm.parseRoadmap(t).points.filter((x) => x.owner === from);
+      if (!pts.length) continue;
+      for (const x of pts) t = rm.replacePoint(t, x.id, rm.pointBlock({ ...x, owner: n }));
+      files[file] = t;
+    }
     return { files, log: [{ project: 'Исполнители', text: `переименован: ${from} → ${n} (во всех задачах)`, kind: 'исполнители', from, to: n }] };
   },
 
@@ -407,8 +570,9 @@ const ops = {
     for (const file of await listProjectFiles()) {
       const p = md.parseProject((await readRel(file)) || '', file);
       for (const t of p.tasks) if (t.assignee === name) places.push(`${p.title}: ${t.title}`);
+      for (const x of rm.parseRoadmap((await readRel(file)) || '').points) if (x.owner === name) places.push(`${p.title}, RoadMap: ${x.title}`);
     }
-    if (places.length) throw new HttpError(409, `Нельзя удалить: ${name} назначен(а) на задачи`, { places });
+    if (places.length) throw new HttpError(409, `Нельзя удалить: ${name} назначен(а) на задачи или владеет точками`, { places });
     return { files: { [PEOPLE_FILE]: md.formatPeopleGroups(people.filter((p) => p.name !== name), text) }, log: [{ project: 'Исполнители', text: `удалён: ${name}`, kind: 'исполнители', from: name }] };
   },
 
@@ -460,15 +624,185 @@ const ops = {
     if (places.length) throw new HttpError(409, `Нельзя удалить: тэг «${name}» стоит у задач`, { places });
     return { files: { [TAGS_FILE]: md.formatTags(tags.filter((t) => t.name !== name), text) }, log: [{ project: 'Тэги', text: `удалён: ${name}`, kind: 'тэги', from: name }] };
   },
+
+  // ---------- дорожная карта ----------
+  async pointCreate({ file, pre, title, desc, owner, start, plan, ind }) {
+    checkProjectFile(file);
+    const text = await readRel(file);
+    if (text === null) throw new HttpError(409, 'Файл проекта не найден');
+    const p = {
+      bullet: '-', id: await pointIdAllocator(), title: checkName(title).slice(0, 120), pre: await checkPrefix(pre), desc: String(desc || '').trim(),
+      owner: await checkOwner(owner), start: checkDate(start, 'старт работ'), plan: checkDate(plan, 'срок', true), ind: !!ind,
+      health: 'g', shifts: 0, closed: '', task: '', after: [], extra: [],
+    };
+    if (!p.ind) p.orig = p.plan;
+    return { files: { [file]: rm.addPoint(text, rm.pointBlock(p)) }, point: { file, id: p.id } };
+  },
+
+  // Точка из задачи: только при сроке и исполнителе; дальше они синхронизированы
+  async pointFromTask({ file, ref }) {
+    const { text, t } = await mustTask(file, ref);
+    if (!md.isValidDate(t.due)) throw new HttpError(400, 'Сначала поставьте задаче срок');
+    if (!t.assignee) throw new HttpError(400, 'Сначала выберите исполнителя задачи');
+    await checkOwner(t.assignee);
+    const tid = await withId(t);
+    if (rm.parseRoadmap(text).points.some((x) => x.task === tid.id)) throw new HttpError(409, 'У задачи уже есть контрольная точка');
+    let out = md.replaceBlock(text, t, md.taskBlock(tid));
+    const p = {
+      bullet: '-', id: await pointIdAllocator(), title: t.title, pre: '', desc: '', owner: t.assignee, start: '', plan: t.due, orig: t.due, ind: false,
+      health: 'g', shifts: 0, closed: t.status === 'closed' ? (t.closed || md.today()) : '', task: tid.id, after: [], extra: [],
+    };
+    out = rm.addPoint(out, rm.pointBlock(p));
+    return { files: { [file]: out }, point: { file, id: p.id } };
+  },
+
+  async pointUpdate({ file, id, patch }) {
+    const ws = workspace();
+    const p = await mustPoint(ws, file, id);
+    const pp = { ...(patch || {}) };
+    if ('pre' in pp) pp.pre = await checkPrefix(pp.pre);
+    if ('owner' in pp) pp.owner = await checkOwner(pp.owner);
+    if ('plan' in pp) pp.plan = checkDate(pp.plan, 'срок', true);
+    if ('start' in pp) pp.start = checkDate(pp.start, 'старт работ');
+    if ('closed' in pp) pp.closed = checkDate(pp.closed, 'дату закрытия');
+    if ('title' in pp && !String(pp.title || '').trim()) throw new HttpError(400, 'Название не может быть пустым');
+    const n = applyPointPatch(p, pp);
+    let text = rm.replacePoint(await ws.get(file), id, rm.pointBlock(n));
+    text = syncTaskFromPoint(text, p, n);
+    ws.set(file, text);
+    return { files: ws.files(), point: { file, id } };
+  },
+
+  async pointDelete({ file, id }) {
+    const ws = workspace();
+    await mustPoint(ws, file, id);
+    ws.set(file, rm.replacePoint(await ws.get(file), id, null));
+    await dropLinksEverywhere(ws, [id]);
+    return { files: ws.files() };
+  },
+
+  // Связь «to после from»: хранится у точки to как [после:: from]
+  async linkAdd({ from, to }) {
+    if (from === to) throw new HttpError(400, 'Нельзя связать точку саму с собой');
+    const ws = workspace();
+    const a = await findPoint(ws, from), b = await findPoint(ws, to);
+    if (!a || !b) throw new HttpError(409, 'Точка не найдена — карта обновлена');
+    if (b.p.after.includes(from) || a.p.after.includes(to)) return { files: {} };
+    ws.set(b.file, rm.replacePoint(await ws.get(b.file), to, rm.pointBlock({ ...b.p, after: [...b.p.after, from] })));
+    return { files: ws.files() };
+  },
+
+  async linkDelete({ from, to }) {
+    const ws = workspace();
+    const b = await findPoint(ws, to);
+    if (!b || !b.p.after.includes(from)) return { files: {} };
+    ws.set(b.file, rm.replacePoint(await ws.get(b.file), to, rm.pointBlock({ ...b.p, after: b.p.after.filter((x) => x !== from) })));
+    return { files: ws.files() };
+  },
+
+  // Дорожка проекта на карте — это раздел «## RoadMap» в его файле
+  async laneAdd({ file }) {
+    checkProjectFile(file);
+    const text = await readRel(file);
+    if (text === null) throw new HttpError(409, 'Файл проекта не найден');
+    return { files: { [file]: rm.ensureSection(text) }, log: [{ project: projTitle(file, text), section: 'roadmap', text: 'проект добавлен на дорожную карту', kind: 'дорожка' }] };
+  },
+
+  // Убрать дорожку можно, только когда все её точки закрыты; закрытые точки уходят в архив проекта
+  async laneRemove({ file }) {
+    checkProjectFile(file);
+    const text = await readRel(file);
+    if (text === null) throw new HttpError(409, 'Файл проекта не найден');
+    const { text: out, points } = rm.removeSection(text);
+    if (points.some((x) => !x.closed)) throw new HttpError(409, 'Убрать дорожку можно, когда все её точки закрыты');
+    const ws = workspace();
+    ws.set(file, out);
+    if (points.length) {
+      const arch = await archiveTaskFile(file);
+      let a = arch.text;
+      for (const x of points) a = rm.addPoint(a, rm.pointBlock(x));
+      ws.set(arch.rel, a);
+      await dropLinksEverywhere(ws, points.map((x) => x.id));
+    }
+    const title = projTitle(file, text);
+    return { files: ws.files(), log: [{ project: title, section: 'roadmap', text: `проект убран с дорожной карты${points.length ? `, закрытые точки (${points.length}) перенесены в архив` : ''}`, kind: 'дорожка', archivedPoints: points.map((x) => x.id) }] };
+  },
+
+  async releaseSet({ date, name }) {
+    const d = checkDate(date, 'дату релиза', true);
+    const n = md.fieldValue(String(name || '')).slice(0, 30);
+    const text = (await readRel(RELEASES_FILE)) || '';
+    const list = rm.parseReleases(text);
+    const cur = list.find((r) => r.date === d);
+    const next = list.filter((r) => r.date !== d);
+    if (n) next.push({ date: d, name: n });
+    const label = d.split('-').reverse().join('.');
+    const ev = n ? (cur ? `релиз ${label}: ${cur.name} → ${n}` : `плановый релиз ${n}: ${label}`) : `плановый релиз ${cur?.name || ''} снят: ${label}`;
+    return { files: { [RELEASES_FILE]: rm.formatReleases(next, text) }, log: [{ project: 'Релизы', section: 'roadmap', text: ev, kind: 'релиз', from: cur?.name || '', to: n }] };
+  },
+
+  async prefixAdd({ code, name, color }) {
+    const c = String(code || '').trim().replace(/[\[\]\s]/g, '').toUpperCase().slice(0, 12);
+    if (!c) throw new HttpError(400, 'Код префикса не может быть пустым');
+    const text = await readRel(PREFIXES_FILE);
+    const list = await readPrefixes();
+    if (list.some((p) => p.code.toLowerCase() === c.toLowerCase())) throw new HttpError(409, 'Такой префикс уже есть');
+    const col = md.TAG_COLOR_NAMES.includes(color) ? color : '';
+    const n = md.fieldValue(String(name || '')).slice(0, 60);
+    return { files: { [PREFIXES_FILE]: rm.formatPrefixes([...list, { code: c, name: n, color: col }], text || '') }, log: [{ project: 'Префиксы', section: 'roadmap', text: `добавлен: ${c}${n ? ` (${n})` : ''}`, kind: 'префиксы', to: c }] };
+  },
+
+  async prefixUpdate({ code, name, color }) {
+    const text = await readRel(PREFIXES_FILE);
+    const list = await readPrefixes();
+    const p = list.find((x) => x.code === code);
+    if (!p) throw new HttpError(409, 'Префикс не найден');
+    const before = { ...p };
+    if (name !== undefined) p.name = md.fieldValue(String(name || '')).slice(0, 60);
+    if (color !== undefined && md.TAG_COLOR_NAMES.includes(color)) p.color = color;
+    const what = before.name !== p.name ? `расшифровка ${code}: ${before.name || 'нет'} → ${p.name || 'нет'}` : `цвет ${code}: ${before.color || 'авто'} → ${p.color}`;
+    return { files: { [PREFIXES_FILE]: rm.formatPrefixes(list, text || '') }, log: [{ project: 'Префиксы', section: 'roadmap', text: what, kind: 'префиксы' }] };
+  },
+
+  async prefixDelete({ code }) {
+    const places = [];
+    for (const file of await listProjectFiles()) {
+      const text = (await readRel(file)) || '';
+      for (const x of rm.parseRoadmap(text).points) if (x.pre === code) places.push(`${projTitle(file, text)}: ${x.title}`);
+    }
+    if (places.length) throw new HttpError(409, `Нельзя удалить: префикс ${code} стоит у точек`, { places });
+    const text = await readRel(PREFIXES_FILE);
+    const list = (await readPrefixes()).filter((p) => p.code !== code);
+    return { files: { [PREFIXES_FILE]: rm.formatPrefixes(list, text || '') }, log: [{ project: 'Префиксы', section: 'roadmap', text: `удалён: ${code}`, kind: 'префиксы', from: code }] };
+  },
 };
+
+// История контрольной точки из журнала: все строки с её ID, новые сверху
+async function pointHistory(id) {
+  if (!/^m\d+$/.test(id)) return [];
+  const dir = path.join(folder, log.LOG_DIR);
+  const names = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort();
+  const items = [];
+  for (const n of names) {
+    const text = (await readRel(path.join(log.LOG_DIR, n))) || '';
+    for (const l of text.split(/\r?\n/)) {
+      if (!l.includes(`[id:: ${id}]`)) continue;
+      const parts = l.replace(/^[-*+]\s+/, '').replace(/\s*\[[^\[\]:]+::[^\]]*\]/g, '').split(' · ');
+      const titleAt = parts.findIndex((x) => /^«.*»$/.test(x));
+      items.push({ date: n.slice(0, 10), time: parts[0], text: parts.slice(titleAt >= 0 ? titleAt + 1 : 2).join(' · ') });
+    }
+  }
+  return items.reverse().slice(0, 100);
+}
 
 const projTitle = (file, text) => md.parseProject(text || '', file).title;
 
 async function takeSnapshot() {
   const files = {};
   for (const f of await listProjectFiles()) {
-    const p = md.parseProject((await readRel(f)) ?? '', f);
-    files[f] = { title: p.title, tasks: p.tasks };
+    const text = (await readRel(f)) ?? '';
+    const p = md.parseProject(text, f);
+    files[f] = { title: p.title, tasks: p.tasks, points: rm.parseRoadmap(text).points };
   }
   return { files, people: await readPeople(), tags: await readTags() };
 }
@@ -477,15 +811,18 @@ async function takeSnapshot() {
 async function syncExternal() {
   if (!folder) return;
   const cur = await takeSnapshot();
-  const events = [...log.diffSnapshots(snap.files, cur.files, ' (вне борда)', true), ...log.diffPeople(snap.people, cur.people, ' (вне борда)', true), ...log.diffPeople(snap.tags || [], cur.tags, ' (вне борда)', true, 'Тэги')];
+  const events = [...log.diffSnapshots(snap.files, cur.files, ' (вне борда)', true), ...log.diffPoints(snap.files, cur.files, ' (вне борда)', true), ...log.diffPeople(snap.people, cur.people, ' (вне борда)', true), ...log.diffPeople(snap.tags || [], cur.tags, ' (вне борда)', true, 'Тэги')];
   snap = cur;
   await log.appendLog(folder, events);
   if (events.length) await updateStatsFile();
 }
 
-async function logAfterWrite(explicit) {
+async function logAfterWrite(explicit, withPoints = true) {
   const cur = await takeSnapshot();
-  const events = explicit ?? [...log.diffSnapshots(snap.files, cur.files), ...log.diffPeople(snap.people, cur.people), ...log.diffPeople(snap.tags || [], cur.tags, '', false, 'Тэги')];
+  // Точки, ушедшие в архив вместе с дорожкой, не «удалены»: это уже сказано в событии дорожки
+  const archived = new Set((explicit || []).flatMap((e) => e.archivedPoints || []));
+  const points = !withPoints ? [] : log.diffPoints(snap.files, cur.files).filter((e) => !(e.kind === 'удаление точки' && archived.has(e.id)));
+  const events = explicit ? [...explicit, ...points] : [...log.diffSnapshots(snap.files, cur.files), ...points, ...log.diffPeople(snap.people, cur.people), ...log.diffPeople(snap.tags || [], cur.tags, '', false, 'Тэги')];
   snap = cur;
   await log.appendLog(folder, events);
   return events;
@@ -520,7 +857,7 @@ async function restoreAndLog(changes, dir, events, label) {
   const word = dir === 'undo' ? 'отменено' : 'возвращено';
   const list = Array.isArray(events) && events.length ? events : [{ text: String(label || 'действие') }];
   const kind = dir === 'undo' ? 'отмена' : 'возврат';
-  await logAfterWrite(list.slice(0, 200).map((e) => ({ project: String(e.project || ''), task: String(e.task || ''), id: String(e.id || ''), text: `${word}: ${String(e.text || '')}`, kind, what: String(e.kind || '') })));
+  await logAfterWrite(list.slice(0, 200).map((e) => ({ project: String(e.project || ''), task: String(e.task || ''), id: String(e.id || ''), section: String(e.section || ''), text: `${word}: ${String(e.text || '')}`, kind, what: String(e.kind || '') })), false);
   await updateStatsFile();
 }
 
@@ -567,6 +904,7 @@ async function handleApi(req, res, url) {
     case 'POST /api/open': { const b = await readBody(req); await openFolder(String(b.path || '')); return send(res, 200, { folder }); }
     case 'POST /api/forget': { const b = await readBody(req); config.recent = config.recent.filter((r) => r !== b.path); await saveConfig(); return send(res, 200, { recent: config.recent }); }
     case 'GET /api/board': needFolder(); return send(res, 200, await getBoard());
+    case 'GET /api/history': needFolder(); return send(res, 200, { items: await pointHistory(String(url.searchParams.get('id') || '')) });
     case 'POST /api/op': {
       needFolder();
       const b = await readBody(req);
@@ -580,7 +918,7 @@ async function handleApi(req, res, url) {
         if (changes.length) await updateStatsFile();
         return { ...r, changes, events };
       });
-      return send(res, 200, { changes: result.changes, task: result.task || null, events: result.events, rejected: result.rejected || null });
+      return send(res, 200, { changes: result.changes, task: result.task || null, point: result.point || null, events: result.events, rejected: result.rejected || null });
     }
     case 'POST /api/restore': {
       needFolder();
