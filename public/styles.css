@@ -368,6 +368,10 @@ button.pt-mark:hover { background: var(--accent-soft); }
 .rm { height: calc(100vh - 54px - var(--tabs)); overflow: auto; position: relative; user-select: none; }
 .rm-inner { position: relative; }
 .rm-head { position: sticky; top: 0; z-index: 7; display: flex; background: var(--paper); border-bottom: 1px solid var(--line); }
+.rm .corner .rm-grip { position: absolute; top: 0; bottom: 0; right: -7px; width: 14px; cursor: col-resize; z-index: 3; touch-action: none; }
+.rm .corner .rm-grip::after { content: ""; position: absolute; left: 6px; top: 10px; bottom: 10px; width: 2px; border-radius: 1px; background: transparent; transition: background .12s; }
+.rm .corner:hover .rm-grip::after { background: var(--faint); }
+.rm .corner .rm-grip:hover::after, .rm .corner .rm-grip.active::after { background: var(--accent); }
 .rm .corner { position: sticky; left: 0; z-index: 2; flex: none; background: var(--paper); border-right: 1px solid var(--line); display: flex; align-items: flex-end; padding: 0 0 7px 16px; font-size: 12px; color: var(--faint); }
 .hc { position: relative; flex: none; }
 .hc .cell { position: absolute; display: flex; align-items: center; white-space: nowrap; overflow: hidden; font-size: 12px; }
@@ -380,13 +384,16 @@ button.pt-mark:hover { background: var(--accent-soft); }
 .hc .rel { position: absolute; top: 47px; height: 22px; display: flex; align-items: center; justify-content: center; background: #2f6faa; color: #fff; border-radius: 5px; font-size: 11px; font-weight: 600; padding: 0 5px; white-space: nowrap; cursor: pointer; z-index: 1; transform: translateX(-50%); }
 .rm-body { display: flex; position: relative; }
 .rm .labels { position: sticky; left: 0; z-index: 6; flex: none; background: var(--paper); border-right: 1px solid var(--line); }
-.lane-l { display: flex; align-items: flex-start; gap: 6px; padding: 9px 10px 0 12px; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 14px; cursor: pointer; min-width: 0; }
+.lane-l { position: relative; display: flex; align-items: flex-start; gap: 6px; padding: 9px 10px 0 12px; overflow: hidden; border-bottom: 1px solid var(--line); font-weight: 600; font-size: 14px; cursor: pointer; min-width: 0; }
 .lane-l:hover { background: var(--hover); }
 .lane-l .chev { color: var(--faint); transition: transform .15s; display: inline-grid; margin-top: 4px; }
 .lane-l.coll .chev { transform: rotate(-90deg); }
-.lane-l .ln { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lane-l .ln { min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
+.lane-l.coll .ln { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-l .n { color: var(--faint); font-weight: 500; font-size: 12.5px; margin-top: 1px; }
-.lane-l .x { margin-left: auto; color: var(--faint); opacity: 0; font-size: 12px; font-weight: 500; padding: 1px 6px; border-radius: 4px; flex: none; }
+/* «Убрать» появляется поверх при наведении и не отнимает место у названия */
+.lane-l .x { position: absolute; right: 8px; top: 8px; color: var(--faint); opacity: 0; font-size: 12px; font-weight: 500; padding: 1px 6px; border-radius: 4px; background: var(--hover); pointer-events: none; }
+.lane-l:hover .x { pointer-events: auto; }
 .lane-l:hover .x { opacity: 1; }
 .lane-l .x:hover { background: var(--press); color: var(--ink); }
 .lane-l .x.off { cursor: not-allowed; }

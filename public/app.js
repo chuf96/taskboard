@@ -577,7 +577,7 @@ function renderProject(p) {
   if (!filter) {
     if (state.adding?.file === p.file) {
       // Enter в названии переводит к сроку, Enter в сроке создаёт задачу. Срок можно оставить пустым.
-      const wrap = h(`<div class="add-row-wrap"><input class="add-input" maxlength="${TITLE_MAX}" placeholder="Название задачи… Enter — к сроку, Esc — закрыть"><input class="add-due" placeholder="срок дд.мм.гггг" title="Срок задачи, необязательно. Enter — добавить"></div>`);
+      const wrap = h(`<div class="add-row-wrap"><input class="add-input" maxlength="${TITLE_MAX}" placeholder="Название задачи… Enter — добавить, Tab — срок, Esc — закрыть"><input class="add-due" placeholder="срок дд.мм.гггг" title="Срок задачи, необязательно. Enter — добавить"></div>`);
       const inp = wrap.querySelector('.add-input');
       const dueInp = wrap.querySelector('.add-due');
       maskDate(dueInp);
@@ -596,7 +596,7 @@ function renderProject(p) {
       };
       const esc2 = (e) => { e.stopPropagation(); state.adding = null; renderBoard(); };
       inp.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); if (inp.value.trim()) { state.adding.focusDue = true; dueInp.focus(); } }
+        if (e.key === 'Enter') { e.preventDefault(); create(); }
         else if (e.key === 'Escape') esc2(e);
       });
       dueInp.addEventListener('keydown', (e) => {
@@ -604,6 +604,7 @@ function renderProject(p) {
         else if (e.key === 'Escape') esc2(e);
       });
       inp.addEventListener('focus', () => { state.adding.focusDue = false; });
+      dueInp.addEventListener('focus', () => { state.adding.focusDue = true; });
       const blur = () => setTimeout(() => {
         const a = document.activeElement;
         if (inp.isConnected && state.adding?.file === p.file && !state.adding.value.trim() && a !== inp && a !== dueInp && !state.pending) { state.adding = null; renderBoard(); }
@@ -1348,6 +1349,11 @@ function relocatePanel(quiet) {
 // ---------- дорожная карта ----------
 // Дорожки — проекты с разделом «## RoadMap», точки — строки этого раздела. Всё рисуется заново из доски.
 const RM = { LEFT: 210, LANE_H: 38, ROW: 40, HEAD: 70 };
+// Ширина колонки с названиями проектов: тянется мышью за правую границу, хранится в браузере
+const RM_LEFT_DEF = 210;
+function rmLeftWidth() {
+  try { const w = Number(localStorage.getItem('taskboard.rmLeft')); return w >= 140 && w <= 480 ? w : RM_LEFT_DEF; } catch { return RM_LEFT_DEF; }
+}
 const RM_SCALES = { q: { months: 3, min: 12, label: 'Квартал' }, h: { months: 6, min: 7, label: 'Полгода' }, y: { months: 12, min: 3, label: 'Год' } };
 const HEALTH = {
   g: { label: 'По плану', c: '#4dab9a', bg: '#dbeee8' },
@@ -1402,6 +1408,7 @@ function rmPeriod() {
 
 // Разметка: ширина дня по масштабу (период масштаба целиком помещается в окно), дорожки и строки точек
 function rmLayout(viewW, scale = state.rmScale) {
+  RM.LEFT = rmLeftWidth();
   const sc = RM_SCALES[scale];
   const { start, end, quarter } = rmPeriod();
   const n = Math.round((end - start) / dayMs);
@@ -1508,7 +1515,7 @@ function renderRoadmap() {
   let lanesL = '', seps = '';
   for (const l of L.lanes) {
     const can = l.pts.every((x) => x.closed);
-    lanesL += `<div class="lane-l${l.coll ? ' coll' : ''}" data-lane="${esc(l.p.file)}" style="height:${l.h}px"><span class="chev">${ICON.chev}</span><span class="ln" title="${esc(l.p.title)}">${esc(l.p.title)}</span><span class="n">${l.pts.length}</span><button class="x${can ? '' : ' off'}" data-rmlane="${esc(l.p.file)}" title="${can ? 'Убрать проект с дорожной карты. Закрытые точки уйдут в архив' : 'Убрать можно, когда все точки закрыты'}">Убрать</button></div>`;
+    lanesL += `<div class="lane-l${l.coll ? ' coll' : ''}" data-lane="${esc(l.p.file)}" style="height:${l.h}px"><span class="chev">${ICON.chev}</span><span class="ln" title="${esc(l.p.title)}">${esc(l.p.title)} <span class="n">${l.pts.length}</span></span><button class="x${can ? '' : ' off'}" data-rmlane="${esc(l.p.file)}" title="${can ? 'Убрать проект с дорожной карты. Закрытые точки уйдут в архив' : 'Убрать можно, когда все точки закрыты'}">Убрать</button></div>`;
     seps += `<div class="lane-sep" style="top:${l.y + l.h - 1}px"></div>`;
     if (!l.pts.length && !l.coll) seps += `<div class="lane-hint" style="top:${l.y + RM.LANE_H + 8}px;left:${Math.max(12, L.X(b.today) + 14)}px">Двойной щелчок по дню создаёт точку</div>`;
   }
@@ -1518,7 +1525,7 @@ function renderRoadmap() {
   const BH = Math.max(L.height + 36, document.documentElement.clientHeight - 54 - 36 - RM.HEAD - 2);
 
   const wrap = h(`<main class="rm${state.rmNames ? ' names' : ''}"><div class="rm-inner" style="width:${RM.LEFT + L.W}px">
-    <div class="rm-head"><div class="corner" style="width:${RM.LEFT}px;height:${RM.HEAD}px">Проекты</div><div class="hc" style="width:${L.W}px;height:${RM.HEAD}px">${head}</div></div>
+    <div class="rm-head"><div class="corner" style="width:${RM.LEFT}px;height:${RM.HEAD}px">Проекты<i class="grip rm-grip" title="Потяните, чтобы изменить ширину. Двойной щелчок — по умолчанию"></i></div><div class="hc" style="width:${L.W}px;height:${RM.HEAD}px">${head}</div></div>
     <div class="rm-body"><div class="labels" style="width:${RM.LEFT}px;min-height:${BH}px">${lanesL}</div>
       <div class="canvas" style="width:${L.W}px;height:${BH}px">${bg}${seps}<svg class="ov" width="${L.W}" height="${BH}">${rmOverlay(L)}</svg>${pts}</div></div>
   </div></main>`);
@@ -1548,6 +1555,31 @@ function rmScrollToDay(iso, smooth) {
 }
 
 function setupRoadmapEvents(wrap, L) {
+  const grip = wrap.querySelector('.rm-grip');
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add('active');
+    document.body.classList.add('col-resizing');
+    const sx = e.clientX, w0 = RM.LEFT;
+    let w = w0;
+    const els = [wrap.querySelector('.corner'), wrap.querySelector('.labels')];
+    const inner = wrap.querySelector('.rm-inner');
+    const mv = (ev) => {
+      w = Math.round(Math.max(140, Math.min(480, w0 + ev.clientX - sx)));
+      for (const el of els) el.style.width = w + 'px';
+      inner.style.width = w + L.W + 'px';
+    };
+    grip.addEventListener('pointermove', mv);
+    grip.addEventListener('pointerup', () => {
+      grip.removeEventListener('pointermove', mv);
+      document.body.classList.remove('col-resizing');
+      try { w === RM_LEFT_DEF ? localStorage.removeItem('taskboard.rmLeft') : localStorage.setItem('taskboard.rmLeft', String(w)); } catch {}
+      renderBoard();
+    }, { once: true });
+  });
+  grip.addEventListener('dblclick', (e) => { e.stopPropagation(); try { localStorage.removeItem('taskboard.rmLeft'); } catch {} renderBoard(); });
+
   const canvas = wrap.querySelector('.canvas');
   const dayAt = (clientX) => { const r = canvas.getBoundingClientRect(); const i = Math.max(0, Math.min(L.n - 1, Math.floor((clientX - r.left) / L.dw))); return isoOf(L.start + i * dayMs); };
   const laneAt = (clientY) => { const y = clientY - canvas.getBoundingClientRect().top; return L.lanes.find((l) => y >= l.y && y < l.y + l.h) || null; };
@@ -2028,8 +2060,16 @@ function rmPdfSvg(L, W, H, TOP, fonts, i0, i1) {
     if (nameW) pts += `<circle cx="${lx + 9}" cy="${p.y}" r="9" fill="#efe9e3"/>` + T(lx + 9, p.y + 3.5, [...p.owner][0].toUpperCase(), 'font-size="10" font-weight="600" text-anchor="middle" fill="#64473a"') + T(lx + 23, p.y + 4.5, p.owner, `font-size="12.5" fill="${RM_C.muted}"`);
   }
   for (const l of L.lanes) {
-    const w = Math.min(measure(l.p.title, '600 14px'), RM.LEFT - 60);
-    lanes += T(14, l.y + 24, l.p.title, `font-size="14" font-weight="600" fill="${RM_C.ink}"`) + T(14 + w + 8, l.y + 24, String(l.pts.length), `font-size="12.5" font-weight="500" fill="${RM_C.faint}"`);
+    const maxW = RM.LEFT - 28, rows = [''];
+    for (const word of l.p.title.split(/\s+/)) {
+      const cur = rows[rows.length - 1], next = cur ? cur + ' ' + word : word;
+      if (cur && measure(next, '600 14px') > maxW) rows.push(word); else rows[rows.length - 1] = next;
+    }
+    const maxRows = l.coll ? 1 : Math.max(1, Math.floor((l.h - 10) / 19));
+    if (rows.length > maxRows) { rows.length = maxRows; rows[maxRows - 1] += '…'; }
+    rows.forEach((r, i) => { lanes += T(14, l.y + 24 + i * 19, r, `font-size="14" font-weight="600" fill="${RM_C.ink}"`); });
+    const w = measure(rows[rows.length - 1], '600 14px');
+    lanes += T(14 + w + 6, l.y + 24 + (rows.length - 1) * 19, String(l.pts.length), `font-size="12.5" font-weight="500" fill="${RM_C.faint}"`);
     lanes += `<line x1="0" y1="${l.y + l.h - 0.5}" x2="${W}" y2="${l.y + l.h - 0.5}" stroke="${RM_C.line}"/>`;
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">

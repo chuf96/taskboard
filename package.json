@@ -1,6 +1,6 @@
 {
   "name": "taskboard",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Локальная доска задач поверх .md-файлов",
   "type": "module",
   "private": true,
