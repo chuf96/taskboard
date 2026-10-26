@@ -406,6 +406,7 @@ function renderBoard() {
   top.querySelector('.filter-chip')?.addEventListener('click', () => setWaitFilter(null));
   top.querySelector('.burger').addEventListener('click', (e) => showMenu(e.currentTarget, [
     ...(isMap ? [] : [{ label: 'Фильтр ожиданий ›', action: (anchor) => waitFilterMenu(anchor) }]),
+    ...(isMap ? [] : [{ label: 'Регулярные задачи', action: () => showRecurring() }]),
     { label: 'Новый проект', action: addProject },
     { label: 'Исполнители', action: showPeople },
     { label: 'Тэги', action: showTags },
@@ -645,6 +646,7 @@ function dueCell(t) {
   return '<button class="ed due none" data-f="due" title="Поставить срок">нет срока</button>';
 }
 
+const recurTip = (t) => { const r = ruleById(t.recur); return r ? `Регулярная задача: ${r.text}. Изменить правило` : 'Создана по регулярному правилу, правило удалено'; };
 function renderRow(p, t, group) {
   const st = shownStatus(t);
   const sel = state.panel && state.panel.file === p.file && state.panel.line === t.line;
@@ -652,7 +654,7 @@ function renderRow(p, t, group) {
   const row = h(`<div class="${cls}" data-group="${esc(group)}">
     <button class="star${t.focus ? ' on' : ''}" title="${t.focus ? 'Убрать из фокуса' : 'В фокус на сегодня'}">${ICON.star(t.focus)}</button>
     <button class="ed st" data-f="status" title="Сменить статус"><span class="dot ${STATUS_DOT[st]}"></span><span class="st-label">${STATUS_LABEL[st]}</span></button>
-    <span class="cell-title">${t.point ? '<button class="pt-mark" data-f="point" title="Есть контрольная точка на RoadMap. Показать">◆</button>' : ''}<button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button></span>
+    <span class="cell-title">${t.point ? '<button class="pt-mark" data-f="point" title="Есть контрольная точка на RoadMap. Показать">◆</button>' : ''}${t.recur ? `<button class="rc-mark" data-f="recur" title="${esc(recurTip(t))}">↻</button>` : ''}<button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button></span>
     <span class="cell-tag">${t.tag ? `<button class="ed tagpill" data-f="tag" style="${tagStyle(t.tag)}" title="${esc(t.tag)}">${esc(t.tag)}</button>` : '<button class="ed blank" data-f="tag">+ тэг</button>'}</span>
     <span class="cell-who"><button class="ed who${t.assignee ? '' : ' blank'}" data-f="assignee" title="${esc(t.assignee || 'Выбрать исполнителя')}">${t.assignee ? `${avatar(t.assignee)}<span class="nm">${esc(t.assignee)}</span>` : '+ исполнитель'}</button></span>
     <span class="cell-due">${dueCell(t)}</span>
@@ -668,6 +670,7 @@ function renderRow(p, t, group) {
     if (f === 'assignee') return assigneeMenu(e.target.closest('[data-f]'), t.assignee, (v) => updateTask(p.file, t, { assignee: v }, 'смена исполнителя'));
     if (f === 'due') return duePopover(e.target.closest('[data-f]'), p.file, t);
     if (f === 'point') return showPointOnMap(t.point);
+    if (f === 'recur') return ruleById(t.recur) ? showRecurring(t.recur) : toast('Правило этой задачи уже удалено');
     openPanel(p.file, t);
   });
   if (group !== 'focus') {
@@ -1987,6 +1990,158 @@ function showPrefixes() {
   draw();
   modal('Префиксы', wrap, [{ label: 'Готово', action: closeModal }]);
   code.focus();
+}
+
+// ---------- регулярные задачи ----------
+// Правила живут в _регулярные.md. Сервер сам создаёт задачу со сроком «сегодня» в день повтора.
+const WD = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+const isoAdd = (iso, n) => new Date(toUTC(iso) + n * dayMs).toISOString().slice(0, 10);
+const wdOf = (iso) => ((Math.floor(toUTC(iso) / dayMs) + 3) % 7) + 1;
+// То же правило, что на сервере (lib/recur.mjs): для предпросмотра ближайших дат в форме
+function ruleOccurs(r, iso) {
+  if (validDate(r.start) && iso < r.start) return false;
+  if (r.kind === 'month') {
+    const [y, m, d] = iso.split('-').map(Number);
+    return d === Math.min(r.day, new Date(Date.UTC(y, m, 0)).getUTCDate());
+  }
+  if (!r.days.includes(wdOf(iso))) return false;
+  if ((r.every || 1) === 1) return true;
+  const mon = (x) => toUTC(x) / dayMs - (wdOf(x) - 1);
+  return Math.round((mon(iso) - mon(validDate(r.start) ? r.start : iso)) / 7) % r.every === 0;
+}
+function nextDates(r, from, n) {
+  const out = [];
+  for (let i = 0; i < 800 && out.length < n; i++) { const d = isoAdd(from, i); if (ruleOccurs(r, d)) out.push(d); }
+  return out;
+}
+const ruleById = (id) => (state.board.recurring || []).find((r) => r.id === id);
+const projTitleOf = (file) => state.board.projects.find((p) => p.file === file)?.title || file.replace(/\.md$/i, '');
+
+function showRecurring(editId) {
+  const wrap = h('<div class="recur-dlg"></div>');
+  const drawList = () => {
+    wrap.innerHTML = '';
+    const rules = state.board.recurring || [];
+    wrap.append(h('<p class="dlg-hint" style="margin:0 0 10px !important">В день повтора борд сам добавит задачу в проект со сроком на этот день. Если вчерашнюю не сделали, она остаётся просроченной, а сегодняшняя приходит отдельно.</p>'));
+    const list = h('<ul class="people-list recur-list"></ul>');
+    if (!rules.length) list.append(h('<li><span class="nm faint">Правил пока нет. Они хранятся в файле _регулярные.md</span></li>'));
+    for (const r of rules) {
+      const meta = [projTitleOf(r.file), r.text, r.assignee, r.paused ? 'на паузе' : r.next ? `следующая ${dayMon(r.next)}` : ''].filter(Boolean).join(' · ');
+      const li = h(`<li class="${r.paused ? 'paused' : ''}">
+        <span class="rc-ic">↻</span>
+        <span class="nm"><span class="rc-t">${esc(r.title)}</span><small class="rc-meta">${esc(meta)}</small>${r.errors.length ? `<small class="rc-err">${esc(r.errors.join('. '))}</small>` : ''}</span>
+        <button class="btn small pause">${r.paused ? 'Возобновить' : 'Пауза'}</button>
+        <button class="icon-btn ren" title="Изменить">✎</button><button class="icon-btn del" title="Удалить">×</button></li>`);
+      li.querySelector('.pause').addEventListener('click', async () => {
+        await run({ type: 'recurUpdate', id: r.id, rule: { ...r, paused: !r.paused } }, r.paused ? 'возобновление правила' : 'пауза правила').then(createdToast).catch(() => {});
+        drawList();
+      });
+      li.querySelector('.ren').addEventListener('click', () => drawForm(r));
+      li.querySelector('.del').addEventListener('click', () => {
+        const ask = h(`<li class="rc-ask"><span class="nm">Удалить «${esc(r.title)}»? Уже созданные задачи останутся.</span><button class="btn small no">Отмена</button><button class="btn small danger yes">Удалить</button></li>`);
+        li.replaceWith(ask);
+        ask.querySelector('.no').addEventListener('click', drawList);
+        ask.querySelector('.yes').addEventListener('click', async () => { await run({ type: 'recurDelete', id: r.id }, 'удаление правила').catch(() => {}); drawList(); });
+      });
+      list.append(li);
+    }
+    wrap.append(list);
+    const add = h(`<button class="more-row add-task"><span class="chev">${ICON.plus}</span>Новое правило</button>`);
+    add.addEventListener('click', () => drawForm(null));
+    wrap.append(add);
+    setActions([{ label: 'Готово', action: closeModal }]);
+  };
+
+  const drawForm = (rule) => {
+    const b = state.board;
+    const today = b.today;
+    const r = rule ? { ...rule, days: [...rule.days] } : { title: '', file: b.projects[0]?.file || '', assignee: '', tag: '', kind: 'week', days: [1, 2, 3, 4, 5], every: 1, day: +today.slice(8), start: today, paused: false };
+    wrap.innerHTML = '';
+    const f = h(`<div class="rc-form">
+      <label class="rc-row"><span class="pop-label">Название задачи</span><input class="field title" maxlength="${TITLE_MAX}" placeholder="Например: Утренняя рутина"></label>
+      <label class="rc-row"><span class="pop-label">Проект</span><select class="field proj">${b.projects.map((p) => `<option value="${esc(p.file)}">${esc(p.title)}</option>`).join('')}</select></label>
+      <div class="rc-row"><span class="pop-label">Повторять</span><div class="seg small kind"><button data-k="week">По дням недели</button><button data-k="month">Число месяца</button></div></div>
+      <div class="rc-week">
+        <div class="rc-days">${WD.map((d, i) => `<button class="rc-day" data-d="${i + 1}">${d}</button>`).join('')}<button class="link-btn" data-preset="work">будни</button><button class="link-btn" data-preset="all">каждый день</button></div>
+        <label class="rc-inline">Раз в <input class="field every" type="number" min="1" max="52" step="1"> нед.</label>
+      </div>
+      <div class="rc-month"><label class="rc-inline">Каждый месяц <input class="field mday" type="number" min="1" max="31" step="1"> числа</label><small class="faint mhint">Если в месяце меньше дней, задача придёт в последний день.</small></div>
+      <label class="rc-row"><span class="pop-label start-label">Начиная с</span><input class="field start" placeholder="дд.мм.гггг" style="width:130px"></label>
+      <div class="rc-row rc-pair"><button class="ed who-pick"></button><button class="ed tag-pick"></button></div>
+      <div class="rc-preview faint"></div>
+    </div>`);
+    wrap.append(f);
+    const $ = (s) => f.querySelector(s);
+    $('.title').value = r.title;
+    $('.proj').value = r.file;
+    $('.every').value = r.every || 1;
+    $('.mday').value = r.day || 1;
+    const startIn = $('.start'); maskDate(startIn); startIn.value = ruDate(r.start || today);
+    const read = () => {
+      r.title = $('.title').value.trim(); r.file = $('.proj').value;
+      r.every = Math.max(1, Math.min(52, parseInt($('.every').value, 10) || 1));
+      r.day = Math.max(1, Math.min(31, parseInt($('.mday').value, 10) || 1));
+      const s = startIn.value.trim();
+      r.start = s ? parseRuDate(s) : today;
+    };
+    const draw = () => {
+      f.querySelectorAll('.kind button').forEach((x) => x.classList.toggle('on', x.dataset.k === r.kind));
+      $('.rc-week').hidden = r.kind !== 'week';
+      $('.rc-month').hidden = r.kind !== 'month';
+      $('.start-label').textContent = r.kind === 'week' && r.every > 1 ? 'Начиная с (от этой недели считаются повторы)' : 'Начиная с';
+      f.querySelectorAll('.rc-day').forEach((x) => x.classList.toggle('on', r.days.includes(+x.dataset.d)));
+      $('.who-pick').innerHTML = r.assignee ? `${avatar(r.assignee)}<span class="nm">${esc(r.assignee)}</span>` : '+ исполнитель';
+      $('.who-pick').classList.toggle('blank', !r.assignee);
+      $('.tag-pick').outerHTML = r.tag ? `<button class="ed tagpill tag-pick" style="${tagStyle(r.tag)}">${esc(r.tag)}</button>` : '<button class="ed blank tag-pick">+ тэг</button>';
+      $('.tag-pick').addEventListener('click', (e) => tagMenu(e.currentTarget, r.tag, (v) => { r.tag = v; draw(); }));
+      read();
+      const pv = $('.rc-preview');
+      if (!r.start) pv.textContent = 'Дата начала в формате ДД.ММ.ГГГГ';
+      else if (r.kind === 'week' && !r.days.length) pv.textContent = 'Выберите дни недели';
+      else {
+        const ds = nextDates(r, r.start > today ? r.start : today, 4);
+        pv.textContent = ds.length ? `Ближайшие: ${ds.map((d) => (d === today ? 'сегодня' : `${WD[wdOf(d) - 1]} ${dayMon(d)}`)).join(', ')}` : '';
+      }
+    };
+    $('.kind').addEventListener('click', (e) => { const k = e.target.closest('[data-k]')?.dataset.k; if (k) { r.kind = k; draw(); } });
+    $('.rc-days').addEventListener('click', (e) => {
+      const d = +e.target.closest('[data-d]')?.dataset.d;
+      const p = e.target.closest('[data-preset]')?.dataset.preset;
+      if (d) r.days = r.days.includes(d) ? r.days.filter((x) => x !== d) : [...r.days, d].sort();
+      else if (p) r.days = p === 'work' ? [1, 2, 3, 4, 5] : [1, 2, 3, 4, 5, 6, 7];
+      else return;
+      draw();
+    });
+    for (const s of ['.every', '.mday', '.start', '.title']) $(s).addEventListener('input', draw);
+    $('.who-pick').addEventListener('click', (e) => assigneeMenu(e.currentTarget, r.assignee, (v) => { r.assignee = v; draw(); }));
+    const save = async () => {
+      read();
+      if (!r.title) { toast('Введите название задачи', true); return $('.title').focus(); }
+      if (!r.start) return toast('Дата начала в формате ДД.ММ.ГГГГ', true);
+      if (!r.file) return toast('Сначала создайте проект', true);
+      const body = { title: r.title, file: r.file, assignee: r.assignee, tag: r.tag, kind: r.kind, days: r.days, every: r.every, day: r.day, start: r.start, paused: r.paused };
+      const op = rule ? { type: 'recurUpdate', id: rule.id, rule: body } : { type: 'recurAdd', rule: body };
+      await run(op, rule ? 'изменение правила' : 'новое правило').then((res) => { createdToast(res); drawList(); }).catch(() => {});
+    };
+    f.querySelectorAll('input').forEach((x) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }));
+    setActions([{ label: 'Назад', action: drawList }, { label: rule ? 'Сохранить' : 'Добавить', cls: 'primary', action: save }]);
+    draw();
+    $('.title').focus();
+  };
+
+  const m = modal('Регулярные задачи', wrap, []);
+  const setActions = (actions) => {
+    const box = m.querySelector('.actions');
+    box.innerHTML = '';
+    for (const a of actions) { const btn = h(`<button class="btn ${a.cls || ''}">${esc(a.label)}</button>`); btn.addEventListener('click', a.action); box.append(btn); }
+  };
+  const edit = editId && ruleById(editId);
+  edit ? drawForm(edit) : drawList();
+}
+// После правки правила задача на сегодня могла появиться сразу: говорим, где её искать
+function createdToast(res) {
+  const ev = (res?.events || []).filter((e) => e.what === 'регулярная');
+  if (ev.length) toast(`Задача на сегодня добавлена: ${ev.map((e) => `«${e.task}» в ${e.project}`).join(', ')}`);
 }
 
 // ---------- PDF ----------

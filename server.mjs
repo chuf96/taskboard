@@ -10,6 +10,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import * as md from './lib/md.mjs';
 import * as log from './lib/log.mjs';
 import * as rm from './lib/roadmap.mjs';
+import * as rc from './lib/recur.mjs';
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
@@ -24,6 +25,7 @@ const TAGS_FILE = '_тэги.md';
 const STATS_FILE = '_статистика.md';
 const RELEASES_FILE = '_релизы.md';
 const PREFIXES_FILE = '_префиксы.md';
+const RECUR_FILE = '_регулярные.md';
 const ORDER_FILE = '_board.json';
 const ARCHIVE_TASKS = path.join('архив', 'задачи');
 const ARCHIVE_PROJECTS = path.join('архив', 'проекты');
@@ -59,6 +61,7 @@ async function openFolder(p) {
   snap = await takeSnapshot();
   startWatcher();
   statsSoon();
+  recurSoon();
 }
 
 // ---------- слежение за папкой ----------
@@ -141,6 +144,7 @@ async function readTags() { return (await readTagList()).map((t) => t.name); }
 async function readReleases() { return rm.parseReleases((await readRel(RELEASES_FILE)) || ''); }
 // Пока файла префиксов нет, действуют префиксы по умолчанию; файл появится при первой правке справочника
 async function readPrefixes() { const t = await readRel(PREFIXES_FILE); return t === null ? rm.DEFAULT_PREFIXES.map((p) => ({ ...p })) : rm.parsePrefixes(t); }
+async function readRules() { return rc.parseRules((await readRel(RECUR_FILE)) || ''); }
 
 // Задачи из архива (архив/задачи и архив/проекты) — для счётчиков «Создано/Закрыто»
 async function readArchivedTasks() {
@@ -206,12 +210,25 @@ async function getBoard() {
       tasks: p.tasks.map((t) => ({
         line: t.line, lineNo: t.lineNo, title: t.title, status: t.status, char: t.char, due: t.due, point: (t.id && byTask.get(t.id)) || '',
         assignee: t.assignee, tag: t.tag, focus: t.focus, id: t.id, created: t.created, taken: t.taken, waiting: t.waiting, deadline: t.deadline, closed: t.closed, cancelled: t.cancelled, result: t.result,
-        description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays),
+        description: t.description, errors: md.validateTask(t, people, tags), overdue: md.isOverdue(t, now, settings.overdueDays), recur: t.recur,
       })),
     });
   }
   const counters = md.dayCounters(projects.flatMap((p) => p.tasks), await readArchivedTasks(), now);
-  return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION, releases: await readReleases(), prefixes: await readPrefixes() };
+  const recurring = (await readRules()).map((r) => ({
+    ...r, next: r.paused ? '' : rc.nextOccurrence(r, r.last && r.last >= now ? addDays(now, 1) : now), text: rc.describe(r),
+    errors: ruleErrors(r, files, people, tags),
+  }));
+  return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION, releases: await readReleases(), prefixes: await readPrefixes(), recurring };
+}
+const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
+function ruleErrors(r, files, people, tags) {
+  const e = [];
+  if (!files.includes(r.file)) e.push(`Проекта «${r.file.replace(/\.md$/i, '')}» нет на доске: задачи не создаются`);
+  if (r.assignee && !people.includes(r.assignee)) e.push(`Исполнителя «${r.assignee}» нет в справочнике`);
+  if (r.tag && !tags.includes(r.tag)) e.push(`Тэга «${r.tag}» нет в справочнике`);
+  if (r.kind === 'week' && !r.days.length) e.push('Не выбраны дни недели');
+  return e;
 }
 
 // ---------- операции ----------
@@ -239,6 +256,88 @@ async function idAllocator() {
 }
 // Задаче без ID он проставляется при первом изменении через борд
 async function withId(t) { return t.id ? t : { ...t, id: (await idAllocator())() }; }
+
+// ---------- регулярные задачи ----------
+// Создаёт сегодняшние задачи по правилам и отмечает в правилах [создано по:: сегодня].
+// Пропущенные дни (борд не открывали) не догоняются: только сегодняшний день.
+async function generateRecurring(ws, now = md.today()) {
+  const rulesText = await ws.get(RECUR_FILE);
+  const rules = rc.parseRules(rulesText || '');
+  const due = rc.dueToday(rules, now);
+  if (!due.length) return [];
+  const files = await listProjectFiles();
+  const alloc = await idAllocator();
+  const events = [];
+  for (const r of due) {
+    if (!files.includes(r.file)) continue;
+    const text = await ws.get(r.file);
+    const p = md.parseProject(text || '', r.file);
+    // Задачу за сегодня уже создали (например, правило вернули отменой) — второй не нужно
+    if (!p.tasks.some((t) => t.recur === r.id && t.due === now)) {
+      const t = { bullet: '-', char: ' ', title: r.title, assignee: r.assignee, tag: r.tag, due: now, created: now, recur: r.id, extra: [], id: alloc() };
+      ws.set(r.file, md.insertBlock(text || '', md.taskBlock(t)));
+      events.push({ project: p.title, task: t.title, id: t.id, text: 'создана по регулярному правилу', kind: 'создание', what: 'регулярная' });
+    }
+    r.last = now;
+  }
+  ws.set(RECUR_FILE, rc.formatRules(rules, rulesText || ''));
+  return events;
+}
+// Фоновая проверка: при открытии доски, раз в минуту и при смене дня. Не попадает в отмену.
+async function recurTick() {
+  if (!folder) return;
+  if ((await readRel(RECUR_FILE)) === null) return;
+  await syncExternal();
+  const ws = workspace();
+  const events = await generateRecurring(ws);
+  const changes = await commit(ws.files());
+  if (!changes.length) return;
+  await logAfterWrite(events);
+  await updateStatsFile();
+  broadcast('change');
+}
+const recurSoon = () => serial(recurTick).catch((e) => console.error(e));
+setInterval(recurSoon, 60 * 1000).unref();
+
+async function checkRule(r, prev) {
+  const n = { ...(prev || {}) };
+  n.title = md.fieldValue(checkName(r.title)).slice(0, 120);
+  n.file = checkProjectFile(r.file);
+  if (!(await listProjectFiles()).includes(n.file)) throw new HttpError(400, 'Выберите проект');
+  n.assignee = String(r.assignee || '').trim();
+  if (n.assignee && !(await readPeople()).includes(n.assignee)) throw new HttpError(400, `Исполнителя «${n.assignee}» нет в справочнике`);
+  n.tag = String(r.tag || '').trim();
+  if (n.tag && !(await readTags()).includes(n.tag)) throw new HttpError(400, `Тэга «${n.tag}» нет в справочнике`);
+  n.kind = r.kind === 'month' ? 'month' : 'week';
+  n.start = checkDate(r.start, 'дату начала') || md.today();
+  if (n.kind === 'month') {
+    const d = Number(r.day);
+    if (!Number.isInteger(d) || d < 1 || d > 31) throw new HttpError(400, 'Число месяца — от 1 до 31');
+    n.day = d; n.days = []; n.every = 1;
+  } else {
+    const days = [...new Set((Array.isArray(r.days) ? r.days : []).map(Number).filter((d) => d >= 1 && d <= 7))].sort();
+    if (!days.length) throw new HttpError(400, 'Выберите хотя бы один день недели');
+    const every = Number(r.every);
+    if (!Number.isInteger(every) || every < 1 || every > 52) throw new HttpError(400, 'Повтор — раз в 1–52 недели');
+    n.days = days; n.every = every; n.day = 1;
+  }
+  n.paused = !!r.paused;
+  return n;
+}
+async function mustRule(id) {
+  const text = (await readRel(RECUR_FILE)) || '';
+  const rules = rc.parseRules(text);
+  const r = rules.find((x) => x.id === id);
+  if (!r) throw new HttpError(409, 'Правило изменилось в файле — список обновлён');
+  return { text, rules, r };
+}
+// Операция над правилами: сразу создаёт сегодняшнюю задачу, если правило на неё выпадает. Отмена уберёт и то и другое.
+async function rulesResult(rules, text, log) {
+  const ws = workspace();
+  ws.set(RECUR_FILE, rc.formatRules(rules, text));
+  const created = await generateRecurring(ws);
+  return { files: ws.files(), log: [...log, ...created] };
+}
 
 async function archiveTaskFile(file) {
   const rel = path.join(ARCHIVE_TASKS, file);
@@ -477,6 +576,9 @@ const ops = {
       if (order.includes(file)) files[ORDER_FILE] = await boardJsonWith({ order: order.map((f) => (f === file ? newFile : f)) });
     }
     files[newFile] = md.renameH1(text, n);
+    const rt = await readRel(RECUR_FILE);
+    const rules = rc.parseRules(rt || '');
+    if (newFile !== file && rules.some((r) => r.file === file)) files[RECUR_FILE] = rc.formatRules(rules.map((r) => (r.file === file ? { ...r, file: newFile } : r)), rt);
     return { files, log: [{ project: n, text: `проект переименован: «${projTitle(file, text)}» → «${n}»`, kind: 'переименование проекта', from: projTitle(file, text), to: n }] };
   },
 
@@ -728,6 +830,28 @@ const ops = {
     return { files: ws.files(), log: [{ project: title, section: 'roadmap', text: `проект убран с дорожной карты${points.length ? `, закрытые точки (${points.length}) перенесены в архив` : ''}`, kind: 'дорожка', archivedPoints: points.map((x) => x.id) }] };
   },
 
+  async recurAdd({ rule }) {
+    const text = await readRel(RECUR_FILE);
+    const texts = [text || ''];
+    for (const f of await listProjectFiles()) texts.push((await readRel(f)) || '');
+    const r = { ...(await checkRule(rule || {})), id: rc.nextRuleId(texts), last: '' };
+    const rules = [...rc.parseRules(text || ''), r];
+    return rulesResult(rules, text || '', [{ project: 'Регулярные задачи', task: r.title, id: r.id, text: `правило добавлено: ${rc.describe(r)}`, kind: 'регулярные' }]);
+  },
+
+  async recurUpdate({ id, rule }) {
+    const { text, rules, r } = await mustRule(id);
+    const n = await checkRule(rule || {}, r);
+    // [создано по::] сохраняется: если задачу за сегодня уже создали, вторую правка не создаст
+    const what = n.paused !== r.paused ? (n.paused ? 'правило на паузе' : 'правило снова действует') : `правило изменено: ${rc.describe(n)}`;
+    return rulesResult(rules.map((x) => (x.id === id ? n : x)), text, [{ project: 'Регулярные задачи', task: n.title, id, text: what, kind: 'регулярные' }]);
+  },
+
+  async recurDelete({ id }) {
+    const { text, rules, r } = await mustRule(id);
+    return { files: { [RECUR_FILE]: rc.formatRules(rules.filter((x) => x.id !== id), text) }, log: [{ project: 'Регулярные задачи', task: r.title, id, text: 'правило удалено, созданные задачи остались', kind: 'регулярные' }] };
+  },
+
   async releaseSet({ date, name }) {
     const d = checkDate(date, 'дату релиза', true);
     const n = md.fieldValue(String(name || '')).slice(0, 30);
@@ -903,7 +1027,7 @@ async function handleApi(req, res, url) {
     case 'GET /api/fs': return send(res, 200, await listDirs(url.searchParams.get('path')));
     case 'POST /api/open': { const b = await readBody(req); await openFolder(String(b.path || '')); return send(res, 200, { folder }); }
     case 'POST /api/forget': { const b = await readBody(req); config.recent = config.recent.filter((r) => r !== b.path); await saveConfig(); return send(res, 200, { recent: config.recent }); }
-    case 'GET /api/board': needFolder(); return send(res, 200, await getBoard());
+    case 'GET /api/board': needFolder(); await recurSoon(); return send(res, 200, await getBoard());
     case 'GET /api/history': needFolder(); return send(res, 200, { items: await pointHistory(String(url.searchParams.get('id') || '')) });
     case 'POST /api/op': {
       needFolder();

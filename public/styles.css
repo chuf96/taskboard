@@ -482,3 +482,30 @@ svg.ov .hit { pointer-events: stroke; cursor: pointer; }
 ::-webkit-scrollbar-thumb { background: #dcdad5; border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---------- регулярные задачи (3.3) ---------- */
+.rc-mark { flex: none; color: var(--accent); font-size: 14px; line-height: 26px; padding: 0 4px 0 0; }
+.rc-mark:hover { opacity: .7; }
+.recur-list li { align-items: flex-start; padding: 6px 4px; }
+.recur-list li .nm { display: flex; flex-direction: column; white-space: normal; }
+.recur-list li.paused .rc-t, .recur-list li.paused .rc-ic { opacity: .5; }
+.rc-ic { color: var(--accent); line-height: 22px; }
+.rc-t { line-height: 22px; }
+.rc-meta { color: var(--muted); font-size: 12.5px; }
+.rc-err { color: var(--danger); font-size: 12.5px; }
+.btn.small { padding: 3px 9px; font-size: 13px; flex: none; }
+.rc-ask { background: var(--danger-soft); }
+.rc-form { display: flex; flex-direction: column; gap: 12px; }
+.rc-row { display: flex; flex-direction: column; gap: 4px; }
+.rc-row .seg { align-self: flex-start; }
+.rc-week, .rc-month { display: flex; flex-direction: column; gap: 8px; }
+.rc-days { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.rc-day { display: inline-grid; place-items: center; width: 34px; height: 30px; border-radius: 6px; border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.rc-day.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+.link-btn { color: var(--accent); font-size: 13px; padding: 0 6px; }
+.link-btn:hover { text-decoration: underline; }
+.rc-inline { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.rc-inline .field { width: 70px; }
+.rc-pair { flex-direction: row; gap: 14px; }
+.rc-pair .ed.blank { opacity: 1; }
+.rc-preview { font-size: 13px; min-height: 18px; }
