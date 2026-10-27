@@ -509,3 +509,10 @@ svg.ov .hit { pointer-events: stroke; cursor: pointer; }
 .rc-pair { flex-direction: row; gap: 14px; }
 .rc-pair .ed.blank { opacity: 1; }
 .rc-preview { font-size: 13px; min-height: 18px; }
+
+/* ---------- перестановка точек вверх-вниз (3.4) ---------- */
+.ptl { cursor: pointer; }
+.prow { transition: transform .15s ease; }
+.prow.row-drag { transition: none; z-index: 9; background: rgba(35, 131, 226, .07); }
+.canvas.row-dragging svg.ov { opacity: .25; }
+.canvas.row-dragging .ptl { cursor: ns-resize; }

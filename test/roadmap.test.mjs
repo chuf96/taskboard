@@ -92,3 +92,18 @@ test('журнал: сдвиг точки с днями и здоровьем', 
   assert.match(line, /\[дней:: \+4\]/);
   assert.match(line, /\[здоровье:: есть риски\]/);
 });
+
+test('порядок рядов: раскладка по дате, перестановка, место новой точки', () => {
+  const t = '# P\n\n## RoadMap\n\n- A [владелец:: Н] [срок:: 2026-11-05] ^m0001\n    описание A\n- B [владелец:: Н] [срок:: 2026-11-01] ^m0002\n- C [владелец:: Н] [срок:: 2026-11-01] ^m0003\n';
+  const ids = (x) => rm.parseRoadmap(x).points.map((p) => p.id).join(',');
+  const s = rm.sortPointsByDate(t);
+  assert.equal(ids(s), 'm0002,m0003,m0001');
+  assert.equal(rm.sortPointsByDate(s), s);
+  assert.equal(ids(rm.movePoint(s, 'm0003', 'm0002')), 'm0003,m0002,m0001');
+  const down = rm.movePoint(s, 'm0002', '');
+  assert.equal(ids(down), 'm0003,m0001,m0002');
+  assert.equal(rm.parseRoadmap(down).points.find((p) => p.id === 'm0001').desc, 'описание A');
+  assert.equal(rm.placeByDate(s, { plan: '2026-11-03' }), 'm0001');
+  assert.equal(rm.placeByDate(s, { plan: '2026-12-01' }), '');
+  assert.equal(ids(rm.addPoint(s, ['- D [владелец:: Н] [срок:: 2026-11-03] ^m0004'], 'm0001')), 'm0002,m0003,m0004,m0001');
+});

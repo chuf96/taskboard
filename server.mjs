@@ -60,6 +60,7 @@ async function openFolder(p) {
   await saveConfig();
   snap = await takeSnapshot();
   startWatcher();
+  migrateSoon();
   statsSoon();
   recurSoon();
 }
@@ -297,6 +298,23 @@ async function recurTick() {
   broadcast('change');
 }
 const recurSoon = () => serial(recurTick).catch((e) => console.error(e));
+
+// 3.4: ряды точек на дорожке задаются порядком в файле. Один раз раскладываем точки по дате,
+// как карта показывала их раньше, чтобы после обновления ничего не перепрыгнуло.
+async function migrateRowOrder() {
+  if (!folder || (await readBoardJson()).rmRows) return;
+  await syncExternal();
+  const files = {};
+  for (const f of await listProjectFiles()) {
+    const t = (await readRel(f)) ?? '';
+    const n = rm.sortPointsByDate(t);
+    if (n !== t) files[f] = n;
+  }
+  files[ORDER_FILE] = await boardJsonWith({ rmRows: 1 });
+  await commit(files);
+  snap = await takeSnapshot();
+}
+const migrateSoon = () => serial(migrateRowOrder).catch((e) => console.error(e));
 setInterval(recurSoon, 60 * 1000).unref();
 
 async function checkRule(r, prev) {
@@ -533,7 +551,7 @@ const ops = {
     let into = md.insertBlock(target, block, before);
     // Контрольная точка задачи переезжает в новый проект вместе с задачей
     const pt = t.id && rm.parseRoadmap(removed).points.find((x) => x.task === t.id);
-    if (pt) { removed = rm.replacePoint(removed, pt.id, null); into = rm.addPoint(into, rm.pointBlock(pt)); }
+    if (pt) { removed = rm.replacePoint(removed, pt.id, null); into = rm.addPoint(into, rm.pointBlock(pt), rm.placeByDate(into, pt)); }
     return { files: { [file]: removed, [toFile]: into }, task: { file: toFile, line: block[0] } };
   },
 
@@ -738,7 +756,7 @@ const ops = {
       health: 'g', shifts: 0, closed: '', task: '', after: [], extra: [],
     };
     if (!p.ind) p.orig = p.plan;
-    return { files: { [file]: rm.addPoint(text, rm.pointBlock(p)) }, point: { file, id: p.id } };
+    return { files: { [file]: rm.addPoint(text, rm.pointBlock(p), rm.placeByDate(text, p)) }, point: { file, id: p.id } };
   },
 
   // Точка из задачи: только при сроке и исполнителе; дальше они синхронизированы
@@ -754,7 +772,7 @@ const ops = {
       bullet: '-', id: await pointIdAllocator(), title: t.title, pre: '', desc: '', owner: t.assignee, start: '', plan: t.due, orig: t.due, ind: false,
       health: 'g', shifts: 0, closed: t.status === 'closed' ? (t.closed || md.today()) : '', task: tid.id, after: [], extra: [],
     };
-    out = rm.addPoint(out, rm.pointBlock(p));
+    out = rm.addPoint(out, rm.pointBlock(p), rm.placeByDate(out, p));
     return { files: { [file]: out }, point: { file, id: p.id } };
   },
 
@@ -773,6 +791,19 @@ const ops = {
     text = syncTaskFromPoint(text, p, n);
     ws.set(file, text);
     return { files: ws.files(), point: { file, id } };
+  },
+
+  // Ряд точки на дорожке = её место в разделе RoadMap: ставим перед beforeId ('' — в самый низ)
+  async pointOrder({ file, id, beforeId }) {
+    const ws = workspace();
+    const p = await mustPoint(ws, file, id);
+    const text = await ws.get(file);
+    const pts = rm.parseRoadmap(text).points;
+    if (beforeId && !pts.some((x) => x.id === beforeId)) throw new HttpError(409, 'Контрольная точка изменилась в файле — карта обновлена');
+    const out = rm.movePoint(text, id, beforeId || '');
+    const from = pts.findIndex((x) => x.id === id), to = rm.parseRoadmap(out).points.findIndex((x) => x.id === id);
+    if (out === text || from === to) return { files: {} };
+    return { files: { [file]: out }, point: { file, id }, log: [{ project: projTitle(file, text), task: log.pointName(p), id, section: 'roadmap', text: `ряд на дорожке: ${from + 1} → ${to + 1}`, kind: 'порядок точки', from: String(from + 1), to: String(to + 1) }] };
   },
 
   async pointDelete({ file, id }) {
@@ -1152,5 +1183,5 @@ server.once('listening', () => {
 await loadConfig();
 const argFolder = process.argv.slice(2).find((a) => !a.startsWith('--'));
 if (argFolder) await openFolder(argFolder).catch(() => console.error('Папка не найдена:', argFolder));
-else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); statsSoon(); }
+else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); migrateSoon(); statsSoon(); recurSoon(); }
 listen();

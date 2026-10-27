@@ -1424,7 +1424,8 @@ function rmLayout(viewW, scale = state.rmScale) {
   let y = 0;
   for (const p of state.board.projects) {
     if (!p.roadmap) continue;
-    const pts = all.filter((x) => x.file === p.file).sort((a, b) => toUTC(shownDate(a)) - toUTC(shownDate(b)) || a.id.localeCompare(b.id));
+    // Ряды — в порядке точек в разделе RoadMap файла; переставляются перетаскиванием вверх-вниз
+    const pts = all.filter((x) => x.file === p.file);
     const coll = state.collapsed.has('rm:' + p.file);
     const hh = coll ? RM.LANE_H : RM.LANE_H + Math.max(1, pts.length) * RM.ROW + 8;
     pts.forEach((x, i) => { x.y = y + (coll ? RM.LANE_H / 2 : RM.LANE_H + i * RM.ROW + RM.ROW / 2); x.coll = coll; });
@@ -1504,13 +1505,13 @@ function renderRoadmap() {
   for (const p of L.byId.values()) {
     const x = L.X(shownDate(p)), col = p.closed ? RM_C.closed : HEALTH[p.health].c;
     const sel = state.ppanel?.id === p.id;
-    pts += `<div class="prow" style="top:${p.y - RM.ROW / 2}px;height:${RM.ROW}px">`;
-    pts += `<div class="dia${p.ind ? ' ind' : ''}${sel ? ' sel' : ''}${p.closed ? ' closed' : ''}" data-pt="${p.id}" style="left:${x}px;top:${RM.ROW / 2}px;${p.ind ? '' : `background:${col}`}" title="${esc(p.title)}${p.closed ? '' : '. Потяните, чтобы сдвинуть срок'}"></div>`;
+    pts += `<div class="prow" data-prow="${p.id}" style="top:${p.y - RM.ROW / 2}px;height:${RM.ROW}px">`;
+    pts += `<div class="dia${p.ind ? ' ind' : ''}${sel ? ' sel' : ''}${p.closed ? ' closed' : ''}" data-pt="${p.id}" style="left:${x}px;top:${RM.ROW / 2}px;${p.ind ? '' : `background:${col}`}" title="${esc(p.title)}${p.closed ? '. Потяните вверх или вниз, чтобы переставить' : '. Потяните вбок, чтобы сдвинуть срок, вверх или вниз, чтобы переставить'}"></div>`;
     if (!p.closed) pts += `<div class="knob" data-knob="${p.id}" style="left:${x + 16}px;top:${RM.ROW / 2}px" title="Потяните к другой точке, чтобы связать"></div>`;
     if (!p.coll) {
       const ox = shiftOf(p) ? L.X(p.orig) : x;
       const lx = Math.max(x, ox) + 24;
-      pts += `<div class="ptl${p.closed ? ' closed' : ''}${p.errors?.length ? ' err' : ''}" data-ptl="${p.id}" style="left:${lx}px;top:${RM.ROW / 2}px"${p.errors?.length ? ` title="${esc(p.errors.join('. '))}"` : ''}>${preChip(p.pre)}<span class="t">${esc(p.title)}</span>${p.ind ? '<span class="ind" title="Индикативный срок">≈</span>' : ''}<span class="who">${avatar(p.owner || '?')}${esc(p.owner)}</span></div>`;
+      pts += `<div class="ptl${p.closed ? ' closed' : ''}${p.errors?.length ? ' err' : ''}" data-ptl="${p.id}" style="left:${lx}px;top:${RM.ROW / 2}px" title="${esc(p.errors?.length ? p.errors.join('. ') : 'Щелчок открывает карточку. Потяните вверх или вниз, чтобы переставить')}">${preChip(p.pre)}<span class="t">${esc(p.title)}</span>${p.ind ? '<span class="ind" title="Индикативный срок">≈</span>' : ''}<span class="who">${avatar(p.owner || '?')}${esc(p.owner)}</span></div>`;
     }
     pts += '</div>';
   }
@@ -1614,22 +1615,91 @@ function setupRoadmapEvents(wrap, L) {
   });
 
   // Ромб тянется — сдвиг срока; кружок тянется к другой точке — связь
+  // Перестановка точки вверх-вниз внутри дорожки: остальные ряды расступаются, на отпускании — новый порядок
+  const rowDrag = (p, el, sy, pointerId) => {
+    const lane = L.lanes.find((l) => l.pts.some((x) => x.id === p.id));
+    if (!lane || lane.coll || lane.pts.length < 2) { toast('Переставлять можно, когда на дорожке больше одной точки'); return false; }
+    const i0 = lane.pts.findIndex((x) => x.id === p.id), n = lane.pts.length;
+    const rows = lane.pts.map((x) => canvas.querySelector(`[data-prow="${x.id}"]`));
+    const me = rows[i0];
+    if (!el.hasPointerCapture?.(pointerId)) el.setPointerCapture(pointerId);
+    state.rmDrag = true;
+    canvas.classList.add('row-dragging');
+    me.classList.add('row-drag');
+    const tip = h('<div class="drag-tip"></div>');
+    document.body.append(tip);
+    let t = i0;
+    const mv = (ev) => {
+      const dy = ev.clientY - sy;
+      me.style.transform = `translateY(${dy}px)`;
+      t = Math.max(0, Math.min(n - 1, i0 + Math.round(dy / RM.ROW)));
+      rows.forEach((r, i) => { if (i !== i0) r.style.transform = i > i0 && i <= t ? `translateY(${-RM.ROW}px)` : i < i0 && i >= t ? `translateY(${RM.ROW}px)` : ''; });
+      tip.textContent = `Ряд ${t + 1} из ${n}`;
+      tip.style.left = ev.clientX + 14 + 'px'; tip.style.top = ev.clientY - 30 + 'px';
+    };
+    const end = (ok) => {
+      el.removeEventListener('pointermove', mv);
+      tip.remove();
+      state.rmDrag = false;
+      state.rmJustDragged = true;
+      setTimeout(() => { state.rmJustDragged = false; }, 0);
+      if (!ok || t === i0) return renderBoard();
+      const beforeId = t > i0 ? lane.pts[t + 1]?.id || '' : lane.pts[t].id;
+      run({ type: 'pointOrder', file: p.file, id: p.id, beforeId }, 'перестановка точки').catch(() => {});
+    };
+    el.addEventListener('pointermove', mv);
+    el.addEventListener('pointerup', () => end(true), { once: true });
+    el.addEventListener('pointercancel', () => end(false), { once: true });
+    return true;
+  };
+
   wrap.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    const lbl = e.target.closest('.ptl');
+    if (lbl) {
+      // Подпись: щелчок открывает карточку, движение вверх-вниз переставляет точку
+      const p = L.byId.get(lbl.dataset.ptl);
+      if (!p) return;
+      const sy = e.clientY;
+      const wait = (ev) => {
+        if (Math.abs(ev.clientY - sy) < 5) return;
+        lbl.removeEventListener('pointermove', wait);
+        rowDrag(p, lbl, sy, e.pointerId);
+      };
+      lbl.setPointerCapture(e.pointerId);
+      lbl.addEventListener('pointermove', wait);
+      lbl.addEventListener('pointerup', () => lbl.removeEventListener('pointermove', wait), { once: true });
+      return;
+    }
     const dia = e.target.closest('.dia'), knob = e.target.closest('.knob');
     if (!dia && !knob) return;
     e.preventDefault();
     const p = L.byId.get((dia || knob).dataset.pt || knob.dataset.knob);
     if (!p) return;
-    const sx = e.clientX;
+    const sx = e.clientX, sy = e.clientY;
     let moved = false;
     if (dia) {
-      if (p.closed) { dia.addEventListener('pointerup', () => openPointPanel(p.file, p.id), { once: true }); return; }
       dia.setPointerCapture(e.pointerId);
+      if (p.closed) {
+        // Закрытую точку сдвинуть нельзя, но переставить по вертикали можно
+        const wait = (ev) => { if (Math.abs(ev.clientY - sy) < 5) return; dia.removeEventListener('pointermove', wait); moved = true; rowDrag(p, dia, sy, e.pointerId); };
+        dia.addEventListener('pointermove', wait);
+        dia.addEventListener('pointerup', () => { dia.removeEventListener('pointermove', wait); if (!moved) openPointPanel(p.file, p.id); }, { once: true });
+        return;
+      }
       state.rmDrag = true;
       const x0 = parseFloat(dia.style.left);
       const tip = h('<div class="drag-tip"></div>');
+      let rowMode = false;
       const mv = (ev) => {
+        // Направление решается по первым пикселям: вбок — срок, вверх-вниз — ряд
+        if (!moved && Math.abs(ev.clientY - sy) > 5 && Math.abs(ev.clientY - sy) > Math.abs(ev.clientX - sx)) {
+          dia.removeEventListener('pointermove', mv);
+          dia.removeEventListener('pointerup', up);
+          rowMode = rowDrag(p, dia, sy, e.pointerId);
+          if (!rowMode) { state.rmDrag = false; dia.addEventListener('pointerup', () => {}, { once: true }); }
+          return;
+        }
         if (Math.abs(ev.clientX - sx) > 3) moved = true;
         if (!moved) return;
         dia.classList.add('dragging');
@@ -1652,7 +1722,7 @@ function setupRoadmapEvents(wrap, L) {
         movePoint(p, nd);
       };
       dia.addEventListener('pointerup', up, { once: true });
-      dia.addEventListener('pointercancel', () => { dia.removeEventListener('pointermove', mv); tip.remove(); state.rmDrag = false; renderBoard(); }, { once: true });
+      dia.addEventListener('pointercancel', () => { if (rowMode) return; dia.removeEventListener('pointermove', mv); tip.remove(); state.rmDrag = false; renderBoard(); }, { once: true });
     } else {
       knob.setPointerCapture(e.pointerId);
       state.rmDrag = true;
