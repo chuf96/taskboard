@@ -61,6 +61,7 @@ async function openFolder(p) {
   snap = await takeSnapshot();
   startWatcher();
   migrateSoon();
+  migrateFocusSoon();
   statsSoon();
   recurSoon();
 }
@@ -275,7 +276,8 @@ async function generateRecurring(ws, now = md.today()) {
     const p = md.parseProject(text || '', r.file);
     // Задачу за сегодня уже создали (например, правило вернули отменой) — второй не нужно
     if (!p.tasks.some((t) => t.recur === r.id && t.due === now)) {
-      const t = { bullet: '-', char: ' ', title: r.title, assignee: r.assignee, tag: r.tag, due: now, created: now, recur: r.id, extra: [], id: alloc() };
+      // Регулярная задача — дело на сегодня: сразу в «В фокусе сегодня»
+      const t = { bullet: '-', char: ' ', title: r.title, assignee: r.assignee, tag: r.tag, focus: true, due: now, created: now, recur: r.id, extra: [], id: alloc() };
       ws.set(r.file, md.insertBlock(text || '', md.taskBlock(t)));
       events.push({ project: p.title, task: t.title, id: t.id, text: 'создана по регулярному правилу', kind: 'создание', what: 'регулярная' });
     }
@@ -314,6 +316,24 @@ async function migrateRowOrder() {
   await commit(files);
   snap = await takeSnapshot();
 }
+
+// 3.5: регулярные задачи создаются сразу в фокусе. Сегодняшние, созданные до обновления, один раз тоже ставим в фокус.
+async function migrateRecurFocus() {
+  if (!folder || (await readBoardJson()).recurFocus) return;
+  await syncExternal();
+  const now = md.today();
+  const files = {};
+  for (const f of await listProjectFiles()) {
+    let t = (await readRel(f)) ?? '';
+    const list = md.parseProject(t, f).tasks.filter((x) => x.recur && x.due === now && !x.focus && !md.isDone(x));
+    for (const x of list.reverse()) t = md.replaceBlock(t, { ...x, endNo: x.lineNo + 1 }, [md.formatTaskLine({ ...x, focus: true })]);
+    if (list.length) files[f] = t;
+  }
+  files[ORDER_FILE] = await boardJsonWith({ recurFocus: 1 });
+  await commit(files);
+  await logAfterWrite();
+}
+const migrateFocusSoon = () => serial(migrateRecurFocus).catch((e) => console.error(e));
 const migrateSoon = () => serial(migrateRowOrder).catch((e) => console.error(e));
 setInterval(recurSoon, 60 * 1000).unref();
 
@@ -1183,5 +1203,5 @@ server.once('listening', () => {
 await loadConfig();
 const argFolder = process.argv.slice(2).find((a) => !a.startsWith('--'));
 if (argFolder) await openFolder(argFolder).catch(() => console.error('Папка не найдена:', argFolder));
-else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); migrateSoon(); statsSoon(); recurSoon(); }
+else if (config.last && fs.existsSync(config.last)) { folder = config.last; snap = await takeSnapshot(); startWatcher(); migrateSoon(); migrateFocusSoon(); statsSoon(); recurSoon(); }
 listen();
