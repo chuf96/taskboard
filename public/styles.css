@@ -516,3 +516,66 @@ svg.ov .hit { pointer-events: stroke; cursor: pointer; }
 .prow.row-drag { transition: none; z-index: 9; background: rgba(35, 131, 226, .07); }
 .canvas.row-dragging svg.ov { opacity: .25; }
 .canvas.row-dragging .ptl { cursor: ns-resize; }
+
+/* ---------- боковая панель проектов (3.6) ---------- */
+.workspace { display: flex; height: calc(100vh - 54px - var(--tabs)); min-height: 0; }
+.workspace .board { flex: 1; min-width: 0; height: auto; }
+.sidebar {
+  flex: 0 0 248px; display: flex; flex-direction: column; min-height: 0;
+  background: #fbfbfa; border-right: 1px solid var(--line); padding: 12px 10px 10px;
+}
+.sidebar.rail { flex-basis: 60px; padding: 12px 8px 10px; align-items: center; }
+.side-head { display: flex; align-items: center; height: 30px; padding: 0 2px 0 10px; margin-bottom: 4px; }
+.sidebar.rail .side-head { padding: 0; margin-bottom: 6px; justify-content: center; }
+.side-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.side-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.sidebar.rail .side-list { align-items: center; gap: 4px; width: 100%; }
+.side-item {
+  position: relative; display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 10px;
+  border-radius: var(--radius); cursor: pointer; user-select: none; flex: none;
+}
+.side-item:hover { background: var(--hover); }
+.side-item.on { background: var(--press); font-weight: 600; }
+.side-item.dragging { opacity: .4; }
+.side-item.drop-into { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.side-item.drop-before::before, .side-item.drop-after::after { content: ""; position: absolute; left: 6px; right: 6px; height: 2px; background: var(--accent); border-radius: 1px; }
+.side-item.drop-before::before { top: -2px; }
+.side-item.drop-after::after { bottom: -2px; }
+.side-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-meta { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); font-weight: 500; font-variant-numeric: tabular-nums; }
+.side-over { width: 6px; height: 6px; border-radius: 50%; background: var(--s-error); flex: none; }
+.side-more { width: 22px; height: 22px; display: none; }
+.side-item:hover .side-meta, .side-item:focus-within .side-meta { display: none; }
+.side-item:hover .side-more, .side-item:focus-within .side-more { display: inline-grid; }
+.sidebar.rail .side-item { width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 8px; }
+.sidebar.rail .side-over { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; box-shadow: 0 0 0 2px #fbfbfa; }
+.side-add { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; margin-top: 6px; color: var(--muted); font-size: 13.5px; border-radius: var(--radius); flex: none; }
+.side-add:hover { background: var(--hover); color: var(--ink); }
+.sidebar.rail .side-add { width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 8px; }
+
+/* Иконка проекта: пастельная плашка; без иконки — кружок с буквой, как у исполнителя */
+.ptile { flex: none; display: inline-grid; place-items: center; border-radius: 5px; line-height: 1; }
+.ptile.letter { border-radius: 50%; background: var(--av-bg); color: var(--av-ink); font-weight: 600; }
+.gh.proj .ptile { border-radius: 6px; cursor: pointer; }
+.gh.fixed { cursor: default; }
+.gh.proj { gap: 9px; height: 54px; padding-top: 22px; }
+.gh.focus .gh-star { display: inline-grid; color: var(--accent); }
+.proj-chip { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; height: 22px; padding: 0 6px 0 3px; border-radius: 4px; color: var(--faint); font-size: 12px; max-width: 40%; }
+.proj-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proj-chip:hover { background: var(--press); color: var(--muted); }
+.cell-title { gap: 0; }
+.drag-hint { position: fixed; z-index: 30; pointer-events: none; background: var(--ink); color: #fff; font-size: 12.5px; padding: 4px 9px; border-radius: 5px; white-space: nowrap; }
+
+/* Галерея иконок */
+.modal.wide { width: min(580px, calc(100vw - 32px)); }
+.icon-dlg { display: flex; flex-direction: column; gap: 16px; padding-bottom: 4px; }
+.icon-head { display: flex; align-items: center; gap: 12px; }
+.icon-head .muted, .icon-colors .muted { color: var(--muted); font-size: 12.5px; }
+.icon-head .strong { font-weight: 600; }
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 2px; }
+.icon-cell { width: 40px; height: 40px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
+.icon-cell:hover { background: var(--hover); color: var(--ink); }
+.icon-colors { display: flex; flex-direction: column; gap: 8px; }
+.icon-colors .swatches { grid-template-columns: repeat(14, 26px); }
+.modal .actions .no-icon { margin-right: auto; }
+@media (max-width: 700px) { .icon-colors .swatches { grid-template-columns: repeat(7, 26px); } }

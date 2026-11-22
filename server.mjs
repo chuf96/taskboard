@@ -11,6 +11,7 @@ import * as md from './lib/md.mjs';
 import * as log from './lib/log.mjs';
 import * as rm from './lib/roadmap.mjs';
 import * as rc from './lib/recur.mjs';
+import * as pj from './lib/projects.mjs';
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
@@ -127,10 +128,11 @@ async function listProjectFiles() {
   const ents = await fsp.readdir(folder, { withFileTypes: true });
   return ents.filter((e) => e.isFile() && /\.md$/i.test(e.name) && !e.name.startsWith('_') && !e.name.startsWith('.')).map((e) => e.name);
 }
-// _board.json: { order: [...файлы], settings: { overdueDays } }
+// _board.json: { order: [...файлы], settings: { overdueDays }, icons: { файл: { icon, color } } }
 async function readBoardJson() {
   try { const o = JSON.parse(await readRel(ORDER_FILE)); return o && typeof o === 'object' ? o : {}; } catch { return {}; }
 }
+async function readIcons() { return pj.normalizeIcons((await readBoardJson()).icons); }
 async function readOrder() { const o = await readBoardJson(); return Array.isArray(o.order) ? o.order : []; }
 async function readSettings() {
   const s = (await readBoardJson()).settings || {};
@@ -221,6 +223,8 @@ async function getBoard() {
     ...r, next: r.paused ? '' : rc.nextOccurrence(r, r.last && r.last >= now ? addDays(now, 1) : now), text: rc.describe(r),
     errors: ruleErrors(r, files, people, tags),
   }));
+  const icons = await readIcons();
+  for (const p of projects) if (icons[p.file]) { p.icon = icons[p.file].icon; p.color = icons[p.file].color; }
   return { folder, name: path.basename(folder), projects, people, peopleGroups, tags, tagColors, counters, today: now, settings, version: VERSION, releases: await readReleases(), prefixes: await readPrefixes(), recurring };
 }
 const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
@@ -611,7 +615,11 @@ const ops = {
       if ((await readRel(newFile)) !== null) throw new HttpError(409, 'Проект с таким названием уже есть');
       files[file] = null;
       const order = await readOrder();
-      if (order.includes(file)) files[ORDER_FILE] = await boardJsonWith({ order: order.map((f) => (f === file ? newFile : f)) });
+      const icons = await readIcons();
+      const patch = {};
+      if (order.includes(file)) patch.order = order.map((f) => (f === file ? newFile : f));
+      if (icons[file]) patch.icons = pj.renameIconKey(icons, file, newFile);
+      if (Object.keys(patch).length) files[ORDER_FILE] = await boardJsonWith(patch);
     }
     files[newFile] = md.renameH1(text, n);
     const rt = await readRel(RECUR_FILE);
@@ -625,13 +633,24 @@ const ops = {
     const text = await readRel(file);
     if (text === null) throw new HttpError(409, 'Файл проекта не найден');
     const rel = await uniqueRel(ARCHIVE_PROJECTS, file);
-    return { files: { [file]: null, [rel]: text }, log: [{ project: projTitle(file, text), text: 'проект перенесён в архив', kind: 'архив проекта' }] };
+    const icons = await readIcons();
+    const extra = icons[file] ? { [ORDER_FILE]: await boardJsonWith({ icons: pj.dropIcon(icons, file) }) } : {};
+    return { files: { [file]: null, [rel]: text, ...extra }, log: [{ project: projTitle(file, text), text: 'проект перенесён в архив', kind: 'архив проекта' }] };
   },
 
   async reorderProjects({ order }) {
     if (!Array.isArray(order)) throw new HttpError(400, 'Неверный порядок');
     order.forEach(checkProjectFile);
     return { files: { [ORDER_FILE]: await boardJsonWith({ order }) }, log: [] };
+  },
+
+  async projectIcon({ file, icon, color }) {
+    checkProjectFile(file);
+    const text = await readRel(file);
+    if (text === null) throw new HttpError(409, 'Файл проекта не найден');
+    let icons;
+    try { icons = pj.withIcon(await readIcons(), file, icon ?? null, color); } catch (e) { throw new HttpError(400, e.message); }
+    return { files: { [ORDER_FILE]: await boardJsonWith({ icons }) }, log: [] };
   },
 
   async setSettings({ overdueDays }) {
