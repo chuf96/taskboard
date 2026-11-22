@@ -1,4 +1,5 @@
 // Task Board — интерфейс. Чистый JS без зависимостей.
+import { PROJECT_ICONS, iconSvg } from './icons.js';
 
 const STATUSES = [
   { id: 'new', label: 'Новая' },
@@ -33,6 +34,8 @@ const state = {
   rmScroll: null,            // { left, top } — где была карта до перерисовки
   undo: [], redo: [],
   pending: 0,
+  selected: null,            // файл проекта, открытого под «На сегодня»; при запуске — самый верхний
+  sidebar: (() => { try { return localStorage.getItem('taskboard.sidebar') === 'rail' ? 'rail' : 'open'; } catch { return 'open'; } })(),
 };
 
 // ---------- утилиты ----------
@@ -302,6 +305,8 @@ const ICON = {
   plus: '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 2.5v7M2.5 6h7"/></svg>',
   open: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M9.5 2.5v11"/></svg>',
   more: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg>',
+  side: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></svg>',
+  plusL: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   burger: '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 5h12M3 9h12M3 13h12"/></svg>',
 };
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
@@ -376,6 +381,7 @@ function renderBoard() {
   const b = state.board;
   if (!state.collapsed || state.collapsedFor !== b.folder) { loadCollapsed(); state.collapsedFor = b.folder; }
   const scroll = $app.querySelector('.board')?.scrollTop || 0;
+  const sideScroll = $app.querySelector('.sidebar .side-list')?.scrollTop || 0;
   const rmEl = $app.querySelector('.rm');
   if (rmEl && !state.rmResetScroll) state.rmScroll = { left: rmEl.scrollLeft, top: rmEl.scrollTop };
   state.rmResetScroll = false;
@@ -452,8 +458,11 @@ function renderBoard() {
   if (isMap) {
     $app.append(renderRoadmap());
   } else {
+    const ws = h(`<div class="workspace${state.sidebar === 'rail' ? ' rail' : ''}"></div>`);
     const board = h('<main class="board"><div class="list"></div></main>');
     const list = board.querySelector('.list');
+    ws.append(renderSidebar(), board);
+    const cur = currentProject();
     if (!b.projects.length) {
       list.append(h(`<div class="empty"><h2>Проектов пока нет</h2><p>Каждый проект — это .md-файл в папке.</p><button class="btn primary">Создать проект</button></div>`));
       list.querySelector('button').addEventListener('click', addProject);
@@ -462,15 +471,17 @@ function renderBoard() {
       list.append(renderColHead(list));
       list.append(renderFocus());
       const filter = state.waitFilter;
-      const shown = filter ? b.projects.filter((p) => p.tasks.some((t) => isWaitingFor(t, filter))) : b.projects;
+      // Под «На сегодня» — только выбранный проект; при фильтре ожиданий — все проекты с ожиданиями этого человека
+      const shown = filter ? b.projects.filter((p) => p.tasks.some((t) => isWaitingFor(t, filter))) : [cur];
       for (const p of shown) list.append(renderProject(p));
       if (filter && !shown.length) {
         list.append(h(`<div class="empty"><h2>У исполнителя ${esc(filter)} нет задач в ожидании</h2><button class="btn primary">Сбросить фильтр</button></div>`));
         list.querySelector('.empty button').addEventListener('click', () => setWaitFilter(null));
       }
     }
-    $app.append(board);
-    board.scrollTop = scroll;
+    $app.append(ws);
+    board.scrollTop = state.scrollFor === cur?.file ? scroll : 0;
+    state.scrollFor = cur?.file;
 
     const input = board.querySelector(state.adding?.focusDue ? '.add-due' : '.add-input');
     if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); input.scrollIntoView({ block: 'nearest' }); }
@@ -486,6 +497,8 @@ function renderBoard() {
   tabs.addEventListener('click', (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v) setView(v); });
   $app.append(tabs);
   if (isMap) rmAfterMount();
+  const sl = $app.querySelector('.sidebar .side-list');
+  if (sl) sl.scrollTop = sideScroll;
 }
 
 function setView(v) {
@@ -517,23 +530,13 @@ function waitFilterMenu(anchor) {
   showMenu(anchor, items);
 }
 
-function groupHead(key, title, count, cls = '') {
-  const collapsed = state.collapsed.has(key);
-  return h(`<div class="gh${cls}${collapsed ? ' collapsed' : ''}">
-    <span class="chev">${ICON.chev}</span><h2 title="${esc(title)}">${esc(title)}</h2><span class="count">${count}</span>
-  </div>`);
-}
-
-// «В фокусе сегодня»: незакрытые задачи со звездой из всех проектов
+// «На сегодня»: незакрытые задачи со звездой из всех проектов. Всегда наверху и не сворачивается.
 function renderFocus() {
   const filter = state.waitFilter;
   const items = [];
   for (const p of state.board.projects) for (const t of p.tasks) if (t.focus && !isDone(t) && (!filter || isWaitingFor(t, filter))) items.push([p, t]);
   const g = h('<section class="group focus-group"></section>');
-  const head = groupHead('focus', 'В фокусе сегодня', items.length, ' focus');
-  head.addEventListener('click', () => toggleCollapsed('focus'));
-  g.append(head);
-  if (state.collapsed.has('focus')) return g;
+  g.append(h(`<div class="gh focus fixed"><span class="gh-star">${ICON.star(true)}</span><h2>На сегодня</h2><span class="count">${items.length}</span></div>`));
   for (const [p, t] of items) g.append(renderRow(p, t, 'focus'));
   if (!items.length) g.append(h(`<div class="hint-row">Отметьте звездой задачи, которыми займётесь сегодня, — они соберутся здесь.</div>`));
   return g;
@@ -544,19 +547,12 @@ function renderProject(p) {
   const open = filter ? p.tasks.filter((t) => isWaitingFor(t, filter)) : p.tasks.filter(isOpenTask);
   const closed = filter ? [] : p.tasks.filter((t) => !isOpenTask(t));
   const g = h(`<section class="group" data-file="${esc(p.file)}"></section>`);
-  const head = groupHead(p.file, p.title, open.length);
-  head.setAttribute('draggable', 'true');
-  head.append(h(`<button class="icon-btn more" title="Действия с проектом">${ICON.more}</button>`));
-  head.addEventListener('click', (e) => { if (!e.target.closest('.more')) toggleCollapsed(p.file); });
-  head.querySelector('.more').addEventListener('click', (e) => showMenu(e.currentTarget, [
-    { label: 'Переименовать', action: () => renameProject(p) },
-    { label: `Архивировать закрытые${closed.length ? ` (${closed.length})` : ''}`, disabled: !closed.length, action: () => run({ type: 'archiveClosed', file: p.file }, 'архивация закрытых') },
-    '-',
-    { label: 'Архивировать проект', danger: true, action: () => confirmDialog('Архивировать проект?', `Файл «${p.file}» будет перенесён в папку архив/проекты. Его можно вернуть вручную.`, 'Архивировать', () => run({ type: 'archiveProject', file: p.file }, 'архивация проекта')) },
-  ]));
+  const head = h(`<div class="gh fixed proj">${projTile(p, 24)}<h2 title="${esc(p.title)}">${esc(p.title)}</h2><span class="count">${open.length}</span>
+    <button class="icon-btn more" title="Действия с проектом">${ICON.more}</button></div>`);
+  head.querySelector('.ptile').addEventListener('click', () => iconDialog(p));
+  head.querySelector('.ptile').title = 'Иконка и цвет проекта';
+  head.querySelector('.more').addEventListener('click', (e) => projectMenu(e.currentTarget, p));
   g.append(head);
-  setupProjectDnd(g, head, p);
-  if (state.collapsed.has(p.file)) return g;
 
   const rows = h('<div class="rows open-rows"></div>');
   for (const t of open) rows.append(renderRow(p, t, p.file));
@@ -654,7 +650,7 @@ function renderRow(p, t, group) {
   const row = h(`<div class="${cls}" data-group="${esc(group)}">
     <button class="star${t.focus ? ' on' : ''}" title="${t.focus ? 'Убрать из фокуса' : 'В фокус на сегодня'}">${ICON.star(t.focus)}</button>
     <button class="ed st" data-f="status" title="Сменить статус"><span class="dot ${STATUS_DOT[st]}"></span><span class="st-label">${STATUS_LABEL[st]}</span></button>
-    <span class="cell-title">${t.point ? '<button class="pt-mark" data-f="point" title="Есть контрольная точка на RoadMap. Показать">◆</button>' : ''}${t.recur ? `<button class="rc-mark" data-f="recur" title="${esc(recurTip(t))}">↻</button>` : ''}<button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button></span>
+    <span class="cell-title">${t.point ? '<button class="pt-mark" data-f="point" title="Есть контрольная точка на RoadMap. Показать">◆</button>' : ''}${t.recur ? `<button class="rc-mark" data-f="recur" title="${esc(recurTip(t))}">↻</button>` : ''}<button class="ed title" data-f="title" title="${esc(t.title)}">${esc(t.title || 'Без названия')}</button>${group === 'focus' ? `<button class="proj-chip" data-f="project" title="Открыть проект «${esc(p.title)}»">${projTile(p, 16)}<span>${esc(p.title)}</span></button>` : ''}</span>
     <span class="cell-tag">${t.tag ? `<button class="ed tagpill" data-f="tag" style="${tagStyle(t.tag)}" title="${esc(t.tag)}">${esc(t.tag)}</button>` : '<button class="ed blank" data-f="tag">+ тэг</button>'}</span>
     <span class="cell-who"><button class="ed who${t.assignee ? '' : ' blank'}" data-f="assignee" title="${esc(t.assignee || 'Выбрать исполнителя')}">${t.assignee ? `${avatar(t.assignee)}<span class="nm">${esc(t.assignee)}</span>` : '+ исполнитель'}</button></span>
     <span class="cell-due">${dueCell(t)}</span>
@@ -670,6 +666,7 @@ function renderRow(p, t, group) {
     if (f === 'assignee') return assigneeMenu(e.target.closest('[data-f]'), t.assignee, (v) => updateTask(p.file, t, { assignee: v }, 'смена исполнителя'));
     if (f === 'due') return duePopover(e.target.closest('[data-f]'), p.file, t);
     if (f === 'point') return showPointOnMap(t.point);
+    if (f === 'project') return selectProject(p.file);
     if (f === 'recur') return ruleById(t.recur) ? showRecurring(t.recur) : toast('Правило этой задачи уже удалено');
     openPanel(p.file, t);
   });
@@ -796,6 +793,7 @@ let drag = null;
 let dropMarker = null;
 function clearDrop() {
   dropMarker?.remove(); dropMarker = null;
+  clearSideDrop();
   document.querySelectorAll('.drag-over').forEach((c) => c.classList.remove('drag-over'));
 }
 
@@ -832,32 +830,169 @@ function setupRowDrop(g, p) {
   });
 }
 
-// Проекты переставляются перетаскиванием заголовка
-function setupProjectDnd(g, head, p) {
-  head.addEventListener('dragstart', (e) => {
+// ---------- боковая панель проектов ----------
+// Иконка проекта: линейная SVG на пастельной плашке цвета проекта; без иконки — кружок с первой буквой (как раньше).
+function projTile(p, size = 22) {
+  const isz = Math.round(size * 0.62);
+  if (p.icon && iconSvg(p.icon)) {
+    const [bg, fg] = TAG_COLORS[p.color] || TAG_COLORS['серый'];
+    return `<span class="ptile" style="width:${size}px;height:${size}px;background:${bg};color:${fg}">${iconSvg(p.icon, isz)}</span>`;
+  }
+  const letter = [...(p.title || '?').trim()][0]?.toUpperCase() || '?';
+  return `<span class="ptile letter" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.5)}px">${esc(letter)}</span>`;
+}
+function currentProject() {
+  const ps = state.board.projects;
+  let p = ps.find((x) => x.file === state.selected);
+  if (!p) { p = ps[0] || null; state.selected = p?.file || null; }
+  return p;
+}
+function selectProject(file) {
+  if (state.waitFilter) {
+    // При фильтре ожиданий видны все проекты — просто прокручиваем к нужному
+    state.selected = file;
+    renderBoard();
+    $app.querySelector(`.group[data-file="${CSS.escape(file)}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    return;
+  }
+  if (state.selected === file) return;
+  state.selected = file; state.adding = null;
+  renderBoard();
+}
+function setSidebar(mode) {
+  state.sidebar = mode;
+  try { localStorage.setItem('taskboard.sidebar', mode); } catch {}
+  renderBoard();
+}
+const projOpenCount = (p) => p.tasks.filter(isOpenTask).length;
+const projOverdue = (p) => p.tasks.some((t) => !isDone(t) && (t.overdue || (validDate(t.due) && t.due < state.board.today)));
+function projectMenu(anchor, p) {
+  const closed = p.tasks.filter((t) => !isOpenTask(t));
+  showMenu(anchor, [
+    { label: 'Иконка и цвет…', action: () => iconDialog(p) },
+    { label: 'Переименовать', action: () => renameProject(p) },
+    { label: `Архивировать закрытые${closed.length ? ` (${closed.length})` : ''}`, disabled: !closed.length, action: () => run({ type: 'archiveClosed', file: p.file }, 'архивация закрытых') },
+    '-',
+    { label: 'Архивировать проект', danger: true, action: () => confirmDialog('Архивировать проект?', `Файл «${p.file}» будет перенесён в папку архив/проекты. Его можно вернуть вручную.`, 'Архивировать', () => run({ type: 'archiveProject', file: p.file }, 'архивация проекта')) },
+  ]);
+}
+
+function renderSidebar() {
+  const b = state.board;
+  const rail = state.sidebar === 'rail';
+  const cur = currentProject();
+  const side = h(`<aside class="sidebar${rail ? ' rail' : ''}" aria-label="Проекты">
+    <div class="side-head">${rail ? '' : '<span class="side-title">Проекты</span>'}
+      <button class="icon-btn side-toggle" title="${rail ? 'Показать панель' : 'Скрыть панель'}" aria-label="${rail ? 'Показать панель' : 'Скрыть панель'}">${ICON.side}</button></div>
+    <div class="side-list"></div>
+    <button class="side-add" title="Новый проект">${ICON.plusL}${rail ? '' : '<span>Проект</span>'}</button>
+  </aside>`);
+  side.querySelector('.side-toggle').addEventListener('click', () => setSidebar(rail ? 'open' : 'rail'));
+  side.querySelector('.side-add').addEventListener('click', addProject);
+  const list = side.querySelector('.side-list');
+  for (const p of b.projects) {
+    const n = projOpenCount(p), over = projOverdue(p);
+    const it = h(`<div class="side-item${p.file === cur?.file ? ' on' : ''}" draggable="true" role="button" tabindex="0"
+        title="${esc(p.title)}${rail ? ` · ${n}` : ''}${over ? ' · есть просроченные' : ''}" aria-label="${esc(p.title)}">
+      ${projTile(p, rail ? 28 : 22)}
+      ${rail ? (over ? '<span class="side-over"></span>' : '') : `<span class="side-name">${esc(p.title)}</span>
+      <span class="side-meta">${over ? '<span class="side-over" title="Есть просроченные задачи"></span>' : ''}<span class="side-count">${n}</span></span>
+      <button class="icon-btn side-more" title="Действия с проектом" aria-label="Действия с проектом">${ICON.more}</button>`}
+    </div>`);
+    it.addEventListener('click', (e) => { if (!e.target.closest('.side-more')) selectProject(p.file); });
+    it.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectProject(p.file); } });
+    it.querySelector('.side-more')?.addEventListener('click', (e) => { e.stopPropagation(); projectMenu(e.currentTarget, p); });
+    setupSideDnd(it, p);
+    list.append(it);
+  }
+  return side;
+}
+
+// Перетаскивание в панели: проект — меняет порядок; задача из списка — переносится в этот проект (в конец открытых)
+function setupSideDnd(it, p) {
+  it.addEventListener('dragstart', (e) => {
     drag = { kind: 'project', file: p.file };
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', p.title);
-    setTimeout(() => g.classList.add('dragging'), 0);
+    setTimeout(() => it.classList.add('dragging'), 0);
   });
-  head.addEventListener('dragend', () => { g.classList.remove('dragging'); clearDrop(); drag = null; });
-  g.addEventListener('dragover', (e) => {
-    if (drag?.kind !== 'project' || drag.file === p.file) return;
-    e.preventDefault();
-    document.querySelectorAll('.drag-over').forEach((x) => x !== g && x.classList.remove('drag-over'));
-    g.classList.add('drag-over');
+  it.addEventListener('dragend', () => { it.classList.remove('dragging'); clearSideDrop(); clearDrop(); drag = null; });
+  const after = (e) => { const r = it.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
+  it.addEventListener('dragover', (e) => {
+    if (drag?.kind === 'row') {
+      if (drag.ref.file === p.file) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      clearSideDrop(); it.classList.add('drop-into');
+      showDragHint(e, `Перенести в «${p.title}»`);
+    } else if (drag?.kind === 'project' && drag.file !== p.file) {
+      e.preventDefault();
+      clearSideDrop(); it.classList.add(after(e) ? 'drop-after' : 'drop-before');
+    }
   });
-  g.addEventListener('drop', (e) => {
-    if (drag?.kind !== 'project' || drag.file === p.file) return;
-    e.preventDefault();
-    const files = state.board.projects.map((x) => x.file).filter((f) => f !== drag.file);
-    const r = g.getBoundingClientRect();
-    const idx = files.indexOf(p.file) + (e.clientY > r.top + Math.min(r.height / 2, 40) ? 1 : 0);
-    files.splice(idx, 0, drag.file);
-    clearDrop();
-    run({ type: 'reorderProjects', order: files }, 'порядок проектов').catch(() => {});
+  it.addEventListener('dragleave', (e) => { if (!it.contains(e.relatedTarget)) { it.classList.remove('drop-into', 'drop-before', 'drop-after'); hideDragHint(); } });
+  it.addEventListener('drop', (e) => {
+    if (drag?.kind === 'row' && drag.ref.file !== p.file) {
+      e.preventDefault();
+      const ref = drag.ref;
+      clearSideDrop(); clearDrop();
+      const closedT = p.tasks.find((t) => !isOpenTask(t));
+      const followPanel = state.panel && state.panel.file === ref.file && state.panel.line === ref.line;
+      run({ type: 'move', file: ref.file, ref: { line: ref.line, lineNo: ref.lineNo }, toFile: p.file, beforeRef: closedT ? { line: closedT.line, lineNo: closedT.lineNo } : null }, 'перенос задачи', (r) => {
+        if (followPanel && r.task && state.panel) Object.assign(state.panel, { file: r.task.file, line: r.task.line });
+        toast(`Задача перенесена в «${p.title}»`);
+      }).catch(() => {});
+    } else if (drag?.kind === 'project' && drag.file !== p.file) {
+      e.preventDefault();
+      const files = state.board.projects.map((x) => x.file).filter((f) => f !== drag.file);
+      files.splice(files.indexOf(p.file) + (after(e) ? 1 : 0), 0, drag.file);
+      clearSideDrop();
+      run({ type: 'reorderProjects', order: files }, 'порядок проектов').catch(() => {});
+    }
   });
 }
+let dragHint = null;
+function showDragHint(e, text) {
+  if (!dragHint) { dragHint = h('<div class="drag-hint"></div>'); document.body.append(dragHint); }
+  dragHint.textContent = text;
+  dragHint.style.left = (e.clientX + 14) + 'px';
+  dragHint.style.top = (e.clientY + 16) + 'px';
+}
+function hideDragHint() { dragHint?.remove(); dragHint = null; }
+function clearSideDrop() {
+  document.querySelectorAll('.side-item.drop-into, .side-item.drop-before, .side-item.drop-after').forEach((x) => x.classList.remove('drop-into', 'drop-before', 'drop-after'));
+  hideDragHint();
+}
+
+// Галерея иконок: иконка + цвет из палитры тэгов; «Без иконки» возвращает кружок с буквой
+function iconDialog(p) {
+  let icon = p.icon || null;
+  let color = p.color || (TAG_COLORS[p.color] ? p.color : TAG_COLOR_NAMES[[...p.file].reduce((a, ch) => (a * 31 + ch.codePointAt(0)) >>> 0, 0) % TAG_COLOR_NAMES.length]);
+  const el = h(`<div class="icon-dlg">
+    <div class="icon-head"><span class="icon-prev"></span><div><div class="strong">${esc(p.title)}</div><div class="muted">Выберите иконку и цвет</div></div></div>
+    <div class="icon-grid">${PROJECT_ICONS.map((x) => `<button class="icon-cell" data-i="${x.id}" title="${esc(x.title)}" aria-label="${esc(x.title)}">${iconSvg(x.id, 20)}</button>`).join('')}</div>
+    <div class="icon-colors"><span class="muted">Цвет</span></div>
+  </div>`);
+  const draw = () => {
+    el.querySelector('.icon-prev').innerHTML = projTile({ ...p, icon, color }, 40);
+    const [bg, fg] = TAG_COLORS[color];
+    el.querySelectorAll('.icon-cell').forEach((b) => {
+      const on = b.dataset.i === icon;
+      b.classList.toggle('on', on);
+      b.style.background = on ? bg : ''; b.style.color = on ? fg : ''; b.style.boxShadow = on ? `0 0 0 1.5px ${fg}` : '';
+    });
+  };
+  el.querySelector('.icon-grid').addEventListener('click', (e) => { const b = e.target.closest('.icon-cell'); if (b) { icon = b.dataset.i; draw(); } });
+  el.querySelector('.icon-colors').append(swatches(color, (c) => { color = c; draw(); }));
+  const save = (ic) => { closeModal(); run({ type: 'projectIcon', file: p.file, icon: ic, color: ic ? color : null }, ic ? 'иконка проекта' : 'снятие иконки').catch(() => {}); };
+  const m = modal('Иконка проекта', el, [
+    ...(p.icon ? [{ label: 'Без иконки', cls: 'subtle no-icon', action: () => save(null) }] : []),
+    { label: 'Отмена', action: closeModal },
+    { label: 'Готово', cls: 'primary', action: () => (icon ? save(icon) : closeModal()) },
+  ]);
+  m.classList.add('wide');
+  draw();
+}
+
 
 function statusMenu(anchor, file, t) {
   showMenu(anchor, STATUSES.map((s) => ({
@@ -965,7 +1100,11 @@ function confirmDialog(title, text, okLabel, onOk) {
   modal(title, h(`<p>${esc(text)}</p>`), [{ label: 'Отмена', action: closeModal }, { label: okLabel, cls: 'primary', action: () => { closeModal(); onOk(); } }]);
 }
 
-function addProject() { promptDialog('Новый проект', '', 'Создать', (name) => run({ type: 'createProject', name }, 'создание проекта').catch(() => {})); }
+function addProject() {
+  promptDialog('Новый проект', '', 'Создать', (name) => run({ type: 'createProject', name }, 'создание проекта', () => {
+    if (state.view === 'tasks') { state.selected = `${name}.md`; state.waitFilter = null; }
+  }).catch(() => {}));
+}
 function renameProject(p) {
   promptDialog('Переименовать проект', p.title, 'Сохранить', (name) => {
     if (name === p.title) return;
@@ -973,6 +1112,7 @@ function renameProject(p) {
     run({ type: 'renameProject', file: p.file, name }, 'переименование проекта', () => {
       if (followPanel && state.panel) state.panel.file = `${name}.md`;
       if (state.openClosed.delete(p.file)) state.openClosed.add(`${name}.md`);
+      if (state.selected === p.file) state.selected = `${name}.md`;
     }).catch(() => {});
   });
 }
